@@ -1,0 +1,117 @@
+{
+ "scenario": "temporal_traffic1",
+ "issues": [
+  {
+   "split": "test",
+   "issue": "issue_0",
+   "target": {
+    "node": "PetSite",
+    "metric": "latency",
+    "agg": "Average",
+    "timestamp": 1682710498
+   },
+   "root_cause": {
+    "node": "payforadoption_AWS::ECS::Container",
+    "metric": null
+   }
+  },
+  {
+   "split": "test",
+   "issue": "issue_1",
+   "target": {
+    "node": "PetSite",
+    "metric": "latency",
+    "agg": "Average",
+    "timestamp": 1682754903
+   },
+   "root_cause": {
+    "node": "petInfo_AWS::DynamoDB::Table",
+    "metric": null
+   }
+  },
+  {
+   "split": "test",
+   "issue": "issue_2",
+   "target": {
+    "node": "PetSite",
+    "metric": "latency",
+    "agg": "Average",
+    "timestamp": 1682778550
+   },
+   "root_cause": {
+    "node": "lambdastatusupdater_AWS::Lambda::Function",
+    "metric": null
+   }
+  },
+  {
+   "split": "test",
+   "issue": "issue_3",
+   "target": {
+    "node": "PetSite",
+    "metric": "availability",
+    "agg": "Average",
+    "timestamp": 1682845730
+   },
+   "root_cause": {
+    "node": "payforadoption_AWS::ECS::Container",
+    "metric": null
+   }
+  },
+  {
+   "split": "test",
+   "issue": "issue_4",
+   "target": {
+    "node": "PetSite",
+    "metric": "availability",
+    "agg": "Average",
+    "timestamp": 1682867933
+   },
+   "root_cause": {
+    "node": "petlistadoptions_AWS::ECS::Fargate",
+    "metric": null
+   }
+  },
+  {
+   "split": "test",
+   "issue": "issue_5",
+   "target": {
+    "node": "PetSite",
+    "metric": "availability",
+    "agg": "Average",
+    "timestamp": 1682801048
+   },
+   "root_cause": {
+    "node": "lambdastatusupdater_AWS::Lambda::Function",
+    "metric": null
+   }
+  },
+  {
+   "split": "train",
+   "issue": "issue_0",
+   "target": {
+    "node": "PetSite",
+    "metric": "latency",
+    "agg": "Average",
+    "timestamp": 1682732700
+   },
+   "root_cause": {
+    "node": "PetSearch_AWS::ECS::Fargate",
+    "metric": null
+   }
+  },
+  {
+   "split": "train",
+   "issue": "issue_1",
+   "target": {
+    "node": "PetSite",
+    "metric": "availability",
+    "agg": "Average",
+    "timestamp": 1682823527
+   },
+   "root_cause": {
+    "node": "PetSearch_AWS::ECS::Fargate",
+    "metric": null
+   }
+  }
+ ]
+}
