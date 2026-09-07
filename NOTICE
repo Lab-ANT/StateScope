@@ -1,0 +1,33 @@
+StateScope
+Copyright (c) 2025 StateScope contributors
+
+This product includes software and data from third parties.
+
+## Vendored research code — src_algo/statescope/vendor/
+
+Slimmed and modernised ports, kept under their original licences:
+
+* `vendor/e2usd/` — E2USD (Lai et al., WWW 2024)
+  https://github.com/AI4CTS/E2USD
+  The DDEM network and FNCC loss follow the authors' reference implementation.
+
+* `vendor/issd/` — ISSD (Wang et al., SIGMOD 2025)
+  https://github.com/Lab-ANT/ISSD
+  Completeness-first and quality-first channel selection.
+
+The detector pipeline (encode, DPGMM, vote) also follows Time2State
+(Wang et al., SIGMOD 2023) — https://github.com/Lab-ANT/Time2State
+
+PCMCI+ is used through the `tigramite` package (Runge et al.), which is
+GPL-3.0 licensed and is an optional dependency installed by the user; no
+tigramite code is included in this repository.
+
+## Vendored data — data_origin/petshop/
+
+The PetShop Dataset (Hardt, Kirschbaum et al., CLeaR 2024)
+https://github.com/amazon-science/petshop-root-cause-analysis
+Code Apache-2.0; data CC-BY-4.0. Only a subset is included; see
+`data_origin/petshop/README.md` and the bundled `LICENSE`.
+
+Other datasets (LEMMA-RCA, WADI) are not redistributed here. See
+`data_origin/*/README.md` for how to obtain them and under which terms.

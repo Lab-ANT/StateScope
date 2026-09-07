@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# uv
+uv.lock
+
+# Node / frontend
+node_modules/
+dist-ssr/
+*.local
+*.tsbuildinfo
+
+# Models
+*.pt
+*.ckpt
+
+# Derived data: rebuilt from data_origin/ on demand
+data/processed/
+
+# Raw data that may not be redistributed (see data_origin/*/README.md).
+# The exception is data_origin/petshop/, which is CC-BY-4.0 and committed.
+data_origin/lemma_rca/**/*.zip
+data_origin/lemma_rca/_cache/
+data_origin/WaDi.zip
+data_origin/wadi/*.csv
+
+# OS / editor
+.DS_Store
