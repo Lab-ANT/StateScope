@@ -1,8 +1,4 @@
-"""Dataset catalog: what can be selected, and which loader serves each id.
-
-Two groups: ``synthetic`` (the built-in generator) and ``public`` (published datasets).
-Entries that need a download are still listed, with a note explaining how to obtain them.
-"""
+"""Dataset catalog: selectable datasets and the loader for each id (download-only ones are listed too)."""
 
 from __future__ import annotations
 
@@ -27,13 +23,12 @@ class CatalogEntry:
 def _build() -> dict[str, CatalogEntry]:
     entries: list[CatalogEntry] = []
 
-    # Synthetic (built-in generator)
     entries.append(CatalogEntry(_syn._ABSTRACT_INFO, _syn.load_abstract))
 
-    # Published datasets
+    # WADI first: the frontend defaults to it and falls back to PetShop when its data is missing.
+    entries.append(CatalogEntry(_wadi.WADI_INFO, _wadi.load_wadi))
     entries.append(CatalogEntry(_petshop.PETSHOP_INFO, _petshop.load_petshop))
     entries.append(CatalogEntry(_lemma.LEMMA_RCA_INFO, _lemma.load_lemma_rca))
-    entries.append(CatalogEntry(_wadi.WADI_INFO, _wadi.load_wadi))
 
     return {e.info.id: e for e in entries}
 

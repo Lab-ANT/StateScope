@@ -1,23 +1,12 @@
-"""StateScope — a comprehensive ecosystem for time series state analysis.
-
-Reference implementation of the 5-stage pipeline from the Vision paper
-"Towards a Comprehensive Ecosystem for Time Series State Analysis".
-
-    [1] Data Infrastructure (labeling, generation, alignment)
-    [2] Feature Engineering / Indicator Selection
-    [3] State Detection
-    [4] State Correlation Detection
-    [5] State Causality Discovery
-"""
+"""StateScope: a state-centric pipeline for time series state analysis."""
 
 from statescope.core.pipeline import PipelineResult, StatePipeline
 from statescope.core.types import (
     AlignedStates,
-    CausalGraph,
-    CausalRule,
     CorrelationResult,
     MTS,
     Segment,
+    StateCausalResult,
     StateSequence,
 )
 
@@ -31,6 +20,5 @@ __all__ = [
     "StateSequence",
     "AlignedStates",
     "CorrelationResult",
-    "CausalGraph",
-    "CausalRule",
+    "StateCausalResult",
 ]

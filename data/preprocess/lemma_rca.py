@@ -49,8 +49,7 @@ LEMMA_RCA_INFO = DatasetInfo(
     source="Zheng et al., NeurIPS 2024 D&B · lemma-rca.github.io · HF: Lemma-RCA-NEC · CC-BY-ND-4.0",
     background="A real multi-domain root-cause-analysis benchmark (NEC microservices / cloud "
     "computing): six operating metrics per pod (CPU, memory, packet rates, bandwidth), "
-    "block-averaged down to ~6000 steps. Detection finds the real operating regimes, and a "
-    "pod-to-node placement topology ships along for the causality stage. Ground truth is "
+    "block-averaged down to ~6000 steps, with the pod-to-node placement topology. Ground truth is "
     "fault root-cause labels, not per-timestep states.",
     available=True,
     tunable=False,

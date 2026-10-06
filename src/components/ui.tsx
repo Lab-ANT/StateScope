@@ -5,7 +5,6 @@ import { useT, type Key } from "../i18n";
 // Stage state machine; mirrors App.tsx::statusOf.
 export type StepStatus = "locked" | "ready" | "running" | "done" | "stale";
 
-// Stage status -> i18n key; the strings live under status.*.
 export const STATUS_KEY: Record<StepStatus, Key> = {
   locked: "status.locked",
   ready: "status.ready",
@@ -14,7 +13,6 @@ export const STATUS_KEY: Record<StepStatus, Key> = {
   stale: "status.stale",
 };
 
-// Status dot colours: done green, running amber (pulsing), ready accent, stale amber ring.
 export function StatusDot({ status, className }: { status: StepStatus; className?: string }) {
   const color =
     status === "done"
@@ -66,8 +64,7 @@ export function StatusChip({ status }: { status: StepStatus }) {
   );
 }
 
-// Primary buttons use the warm grey-black; outline is secondary and ghost is inline. The
-// accent is reserved for current/selected state, never a button fill.
+// The accent is reserved for current/selected state, never a button fill.
 export function Btn(props: {
   children: ReactNode;
   onClick?: () => void;
@@ -94,7 +91,6 @@ export function Btn(props: {
   );
 }
 
-// Segmented control for mutually exclusive choices, in place of a dropdown.
 export function SegToggle<T extends string>(props: {
   value: T;
   onChange: (v: T) => void;
@@ -105,9 +101,10 @@ export function SegToggle<T extends string>(props: {
       {props.options.map((o) => (
         <button
           key={o.value}
+          data-active={props.value === o.value || undefined}
           onClick={() => props.onChange(o.value)}
           className={cn(
-            "rounded-[5px] px-3.5 py-1 text-xs font-medium transition-colors",
+            "shrink-0 whitespace-nowrap rounded-[5px] px-3.5 py-1 text-xs font-medium transition-colors",
             props.value === o.value
               ? "bg-panel text-fg shadow-[0_1px_2px_rgb(0_0_0/0.05)]"
               : "text-fg-muted hover:text-fg",
@@ -120,7 +117,6 @@ export function SegToggle<T extends string>(props: {
   );
 }
 
-// Parameter input: number or select.
 export function Field(props: {
   label: string;
   value: number | string;
@@ -167,7 +163,6 @@ export function Field(props: {
   );
 }
 
-// White card; hierarchy comes from the background step and a hairline, not a shadow.
 export function Card({
   children,
   className,
@@ -201,7 +196,6 @@ export function Note({ children, className }: { children: ReactNode; className?:
   );
 }
 
-// One stage panel: title, tag, status, description, controls and results.
 export function StagePanel(props: {
   title: string;
   tag: string;
@@ -212,12 +206,13 @@ export function StagePanel(props: {
   onRun?: () => void;
   onNext?: () => void;       // "next stage" link, shown once done
   nextLabel?: string;
-  actions?: ReactNode;       // stage actions shown next to "next" (e.g. calibrate)
+  actions?: ReactNode;       // shown next to "Next" when done
+  live?: boolean;            // show results while running (progressive display)
   children?: ReactNode;
 }) {
   const t = useT();
   const disabled = props.status === "locked" || props.status === "running";
-  const showBody = props.status === "done" || props.status === "stale";
+  const showBody = props.status === "done" || props.status === "stale" || (props.status === "running" && !!props.live);
   return (
     <div className="flex flex-col">
       <div className="flex items-start gap-3">

@@ -1,12 +1,4 @@
-"""Stage 3 — unified state detector.
-
-Wraps the vendored E2USD pipeline (DDEM encoder, DPGMM, voting) behind the
-``StateDetector`` interface and returns a ``StateSequence`` that carries its window
-embeddings, so an aligner can reuse them without recomputing.
-
-Time2State and E2USD share the same upstream API and differ only in the encoder (LSE vs
-DDEM), so an LSE encoder can be plugged in later without changing this class.
-"""
+"""Stage 3: E2USD state detector (DDEM encoder, DPGMM clustering, window voting)."""
 
 from __future__ import annotations
 
@@ -94,9 +86,6 @@ class E2USDDetector:
             labels=state_seq,
             source="e2usd",
             confidence=confidence,
-            embeddings=embeddings,
-            embedding_step=self.step,
-            embedding_win_size=self.win_size,
             name=series.name,
         )
 

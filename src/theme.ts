@@ -1,5 +1,5 @@
-// One colour per global state id, used by every ribbon and graph. This is what makes
-// alignment visible. Saturation is held back so the colours stay distinguishable on white.
+// One colour per state id, used by every ribbon. Saturation is held back so the colours stay
+// distinguishable on white.
 export const STATE_COLORS = [
   "#3b6fe0", // blue
   "#2ca35a", // green
@@ -19,7 +19,7 @@ export function stateColor(state: number): string {
 
 // Heatmap ramp: white (0) to the accent indigo (1), sharing the design token hue so every
 // correlation matrix speaks the same colour language.
-// accent ≈ oklch(0.55 0.13 265) ≈ rgb(83,99,201)。
+// accent ≈ oklch(0.55 0.13 265) ≈ rgb(83,99,201).
 export function heatColor(v: number): string {
   const t = Math.max(0, Math.min(1, v));
   const r = Math.round(255 - t * (255 - 83));

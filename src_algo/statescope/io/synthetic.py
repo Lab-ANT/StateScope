@@ -1,7 +1,7 @@
 """Synthetic state data for reproducible end-to-end validation.
 
 Generates several multivariate series that share one ground-truth state vocabulary with a
-controllable cross-series lag, so alignment has a recoverable correspondence and
+controllable cross-series lag, so
 correlation/causality have a real leader-follower signal. Noisy and redundant channels are
 injected for the selectors to prune.
 """

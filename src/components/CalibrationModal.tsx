@@ -9,7 +9,7 @@ import { useT, tr, dyn } from "../i18n";
 // to split, click to select and then relabel or merge, scroll on a segment to cycle states.
 // Low-confidence segments get an amber top bar so partial review is enough; segments edited
 // by hand get a green bottom bar. Edits stay local until "apply", which writes them back and
-// invalidates alignment and everything downstream.
+// invalidates correlation and causality.
 
 const LOW_CONF = 0.8; // 1 - entropy threshold
 
@@ -42,6 +42,10 @@ export function CalibrationModal(props: {
   const names = detected.map((d) => d.name);
 
   const [cur, setCur] = useState(names[0]);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    tabsRef.current?.querySelector("[data-active]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [cur]);
   const [edits, setEdits] = useState<Record<string, EditSeg[]>>(
     () => Object.fromEntries(detected.map((d) => [d.name, fromDetected(d)])));
   const [history, setHistory] = useState<Record<string, EditSeg[][]>>({});
@@ -234,11 +238,14 @@ export function CalibrationModal(props: {
           </div>
         </div>
 
-        {/* Series switch, waveform mode, legend */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-3">
+        {/* Series switch: one scrollable row */}
+        <div ref={tabsRef} className="mx-6 mt-3 overflow-x-auto pb-1">
+          <SegToggle value={cur} onChange={(v) => { setCur(v); setSelSeg(null); }}
+            options={names.map((n) => ({ value: n, label: dirtyNames.includes(n) ? `${dyn(n)} •` : dyn(n) }))} />
+        </div>
+        {/* Waveform mode, legend */}
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-2">
           <div className="flex flex-wrap items-center gap-2.5">
-            <SegToggle value={cur} onChange={(v) => { setCur(v); setSelSeg(null); }}
-              options={names.map((n) => ({ value: n, label: dirtyNames.includes(n) ? `${dyn(n)} •` : dyn(n) }))} />
             <span className="text-[11px] text-fg-faint">{t("calib.reference")}</span>
             <SegToggle value={waveMode} onChange={setWaveMode}
               options={[{ value: "overlay", label: t("calib.overlay") }, { value: "per-channel", label: t("calib.perChannel") }]} />

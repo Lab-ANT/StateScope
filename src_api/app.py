@@ -1,27 +1,28 @@
-"""StateScope session-based API.
+"""StateScope session-based API: one endpoint per stage; rerunning a stage invalidates downstream.
 
 Run (dev):  uv run uvicorn src_api.app:app --reload --port 8000
-
-The pipeline is split into per-stage endpoints rather than one batch call. Intermediate
-results live in a server-side session: downstream stages reuse upstream output, and
-rerunning an upstream stage invalidates everything below it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from typing import Optional
+
 from pydantic import BaseModel
 
 from . import serialize as ser
+from .defaults import METRIC_DETECT_DEFAULTS
 from .session import (
     SessionState,
     SessionStore,
     reduced_series,
-    run_align,
     run_calibrate,
     run_causality,
     run_correlate,
@@ -41,9 +42,6 @@ app.add_middleware(
 )
 
 
-# ----------------------------- Request models ---------------------------- #
-
-
 class DataReq(BaseModel):
     dataset: str = "synthetic_abstract"  # dataset id from the catalog
     n_series: int = 3
@@ -52,54 +50,46 @@ class DataReq(BaseModel):
     n_noise: int = 5
     lag: int = 150
     seed: int = 1
-    scenario: str | None = None  # legacy parameter, kept for compatibility
 
 
 class SelectReq(BaseModel):
-    selector: str = "issd"  # issd | weak | unlabeled
+    selector: str = "unlabeled"  # unlabeled | issd | weak; K per entity
     K: int = 3
+    picks: Optional[dict[str, list[str]]] = None  # explicit picks: entity -> metric names
 
 
 class DetectReq(BaseModel):
     win_size: int = 100
-    step: int = 50
-    nb_steps: int = 60
-    n_states: int = 6
+    step: int = 30
+    nb_steps: int = 20
+    n_states: int = 0  # <= 1: chosen by the DP
+    min_seg_len: int = 0
 
 
 class SegmentIn(BaseModel):
     start: int
     end: int  # exclusive
-    state: int  # the local id shown in the calibration workbench
+    state: int
 
 
 class SeriesEdit(BaseModel):
     name: str
-    segments: list[SegmentIn]  # full segment list, contiguously covering [0, T)
+    segments: list[SegmentIn]  # must contiguously cover [0, T)
 
 
 class CalibrateReq(BaseModel):
-    # Manual calibration: only the edited series need to be submitted.
     series: list[SeriesEdit]
 
 
 class CorrelateReq(BaseModel):
-    kinds: list[str] = ["overall", "transition", "partial", "time_lagged", "structural"]
-    tolerance: int = 60
-    max_lag: int = 400
     min_lift: float = 1.2
+    min_jaccard: float = 0.3
 
 
 class CausalityReq(BaseModel):
-    # Cluster-level regimes + causality: concatenate the cluster, run E2USD for regimes,
-    # then masked PCMCI+ inside each regime.
-    n_states: int = 4       # maximum number of cluster regimes
-    tau_max: int = 2
-    pc_alpha: float = 0.05
-    max_edges_per_regime: int | None = None  # top-K pruning (None = keep all)
-
-
-# ----------------------------- Helpers ----------------------------------- #
+    min_occ: int = 3            # drop state events with fewer occurrences
+    allow_instant: bool = True  # allow co-occurring effects
+    pair_top: int = 8           # two-parent candidates kept after pre-screening
 
 
 def _get(sid: str) -> SessionState:
@@ -107,6 +97,31 @@ def _get(sid: str) -> SessionState:
         return STORE.get(sid)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"session '{sid}' not found")
+
+
+@contextmanager
+def _locked(sid: str) -> Iterator[SessionState]:
+    """Fetch a session and hold its lock; a ValueError (unmet precondition) becomes a 409."""
+    st = _get(sid)
+    with st.lock:
+        try:
+            yield st
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+
+def _selection_json(st: SessionState) -> dict:
+    by = {s.name: s for s in st.series}
+    picks = {e: [by[e].channel_names[i] for i in idx] for e, idx in st.picks.items()}
+    return {**st.selector_meta, "picks": picks, "ranking": st.ranking}
+
+
+def _series_json(st: SessionState) -> list[dict]:
+    return ser.series_json(st.series, st.picks, MAX_POINTS)
+
+
+def _correlations_json(st: SessionState) -> dict:
+    return {k: ser.correlation_json(v) for k, v in st.correlations.items()}
 
 
 def _meta(st: SessionState) -> dict:
@@ -119,18 +134,13 @@ def _meta(st: SessionState) -> dict:
         "n_channels": st.series[0].C,
         "T": st.series[0].T,
         "dataset": st.params.get("dataset"),
-        "scenario": st.params.get("scenario"),
         "true_states": true_states,
         "true_state_names": {int(k): v for k, v in names.items()},
         "has_ground_truth": st.has_truth,
         "stats": st.stats,
         "info": st.info,
+        "metric_detect_defaults": METRIC_DETECT_DEFAULTS.get(st.params.get("dataset") or ""),
     }
-
-
-# ----------------------------- Endpoints --------------------------------- #
-
-
 
 
 @app.get("/api/health")
@@ -140,7 +150,7 @@ def health() -> dict:
 
 @app.get("/api/datasets")
 def datasets() -> dict:
-    """List every selectable dataset, including entries that need a download."""
+    """List every selectable dataset, including ones that need a download."""
     import data as datalayer
 
     items = [
@@ -153,31 +163,31 @@ def datasets() -> dict:
 
 @app.post("/api/sessions")
 def create_session(req: DataReq) -> dict:
-    st = STORE.create(req.model_dump())
+    try:
+        st = STORE.create(req.model_dump())
+    except KeyError as e:  # unknown dataset id
+        raise HTTPException(status_code=404, detail=str(e.args[0]) if e.args else str(e))
+    except (ValueError, FileNotFoundError) as e:  # listed but not integrated / raw data missing
+        raise HTTPException(status_code=409, detail=str(e))
     return {
         "meta": _meta(st),
-        "series": ser.series_json(st.series, None, MAX_POINTS),
-        "ground_truth": [{"name": t.name, "segments": ser.segments_json(t)} for t in st.truth],
+        "series": _series_json(st),
     }
 
 
 @app.get("/api/sessions/{sid}")
 def get_session(sid: str) -> dict:
-    st = _get(sid)
-    out: dict = {"meta": _meta(st), "series": ser.series_json(st.series, st.selected, MAX_POINTS)}
-    if st.selected is not None:
-        out["selection"] = {"indices": st.selected, **st.selector_meta,
-                            "names": [st.series[0].channel_names[i] for i in st.selected]}
-    if st.detected is not None:
-        out["detected"] = ser.detected_json(st.detected, st.truth if st.has_truth else None)
-    if st.aligned is not None:
-        out["aligned"] = ser.aligned_json(st.aligned)
-        out["state_profiles"] = ser.state_profiles_json(reduced_series(st), st.aligned)
-    if st.correlations:
-        out["correlations"] = {k: ser.correlation_json(v) for k, v in st.correlations.items()}
-    if st.causality is not None:
-        out["causality"] = ser.cluster_json(st.causality, st.extra)
-    return out
+    with _locked(sid) as st:  # read under the lock to avoid half-written stage output
+        out: dict = {"meta": _meta(st), "series": _series_json(st)}
+        if st.picks is not None:
+            out["selection"] = _selection_json(st)
+        if st.detected is not None:
+            out["detected"] = ser.detected_json(st.detected, st.owner)
+        if st.correlations:
+            out["correlations"] = _correlations_json(st)
+        if st.causality is not None:
+            out["causality"] = ser.state_causal_json(st.causality, st.owner)
+        return out
 
 
 @app.delete("/api/sessions/{sid}")
@@ -188,70 +198,83 @@ def delete_session(sid: str) -> dict:
 
 @app.post("/api/sessions/{sid}/select")
 def select(sid: str, req: SelectReq) -> dict:
-    st = _get(sid)
-    try:
-        run_select(st, req.selector, req.K)
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {
-        "meta": _meta(st),
-        "selection": {"indices": st.selected, **st.selector_meta,
-                      "names": [st.series[0].channel_names[i] for i in st.selected]},
-        "series": ser.series_json(st.series, st.selected, MAX_POINTS),
-    }
+    with _locked(sid) as st:
+        run_select(st, req.selector, req.K, picks=req.picks)
+        return {
+            "meta": _meta(st),
+            "selection": _selection_json(st),
+            "series": _series_json(st),
+        }
+
+
+def _detect_args(req: DetectReq) -> tuple:
+    return req.win_size, req.step, req.nb_steps, req.n_states, req.min_seg_len
 
 
 @app.post("/api/sessions/{sid}/detect")
 def detect(sid: str, req: DetectReq) -> dict:
+    with _locked(sid) as st:
+        run_detect(st, *_detect_args(req))
+        return {"meta": _meta(st), "detected": ser.detected_json(st.detected, st.owner)}
+
+
+@app.post("/api/sessions/{sid}/detect/stream")
+def detect_stream(sid: str, req: DetectReq) -> StreamingResponse:
+    """Stage 3 as NDJSON: a ``plan`` line, one ``metric`` line per metric, then ``done`` or ``error``."""
+    import json
+    import queue
+    import threading
+
     st = _get(sid)
-    run_detect(st, req.win_size, req.step, req.nb_steps, req.n_states)
-    return {"meta": _meta(st), "detected": ser.detected_json(st.detected, st.truth if st.has_truth else None)}
+    q: queue.Queue = queue.Queue()
+
+    def on_metric(seq, entity, metric, done, total):
+        item = ser.detected_json([seq], {seq.name: (entity, metric)})[0]
+        q.put({"type": "metric", "done": done, "total": total, "detected": item})
+
+    def work():
+        try:
+            with st.lock:
+                q.put({"type": "plan", "items": [{"entity": m.name, "metric": ch}
+                                                 for m in reduced_series(st) for ch in m.channel_names]})
+                run_detect(st, *_detect_args(req), on_metric=on_metric)
+                out = {"type": "done", "meta": _meta(st), "detected": ser.detected_json(st.detected, st.owner)}
+            q.put(out)
+        except Exception as e:  # noqa: BLE001 - the stream has started, so errors go into it
+            q.put({"type": "error", "detail": str(e)})
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def lines():
+        while True:
+            msg = q.get()
+            yield json.dumps(msg, ensure_ascii=False) + "\n"
+            if msg["type"] in ("done", "error"):
+                return
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
 @app.post("/api/sessions/{sid}/detect/calibrate")
 def calibrate(sid: str, req: CalibrateReq) -> dict:
-    """Apply manual calibration, then invalidate alignment and everything downstream."""
-    st = _get(sid)
-    try:
+    """Apply manual calibration; correlation and causality are invalidated."""
+    with _locked(sid) as st:
         run_calibrate(st, [e.model_dump() for e in req.series])
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {"meta": _meta(st), "detected": ser.detected_json(st.detected, st.truth if st.has_truth else None)}
-
-
-@app.post("/api/sessions/{sid}/align")
-def align(sid: str) -> dict:
-    st = _get(sid)
-    try:
-        run_align(st)
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {
-        "meta": _meta(st),
-        "aligned": ser.aligned_json(st.aligned),
-        "state_profiles": ser.state_profiles_json(reduced_series(st), st.aligned),
-    }
+        return {"meta": _meta(st), "detected": ser.detected_json(st.detected, st.owner)}
 
 
 @app.post("/api/sessions/{sid}/correlate")
 def correlate(sid: str, req: CorrelateReq) -> dict:
-    st = _get(sid)
-    try:
-        run_correlate(st, req.kinds, req.model_dump())
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {"meta": _meta(st),
-            "correlations": {k: ser.correlation_json(v) for k, v in st.correlations.items()}}
+    with _locked(sid) as st:
+        run_correlate(st, req.min_lift, req.min_jaccard)
+        return {"meta": _meta(st), "correlations": _correlations_json(st)}
 
 
 @app.post("/api/sessions/{sid}/causality")
 def causality(sid: str, req: CausalityReq) -> dict:
-    st = _get(sid)
-    try:
-        run_causality(st, req.model_dump())
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {"meta": _meta(st), "causality": ser.cluster_json(st.causality, st.extra)}
+    with _locked(sid) as st:
+        run_causality(st, req.min_occ, req.allow_instant, req.pair_top)
+        return {"meta": _meta(st), "causality": ser.state_causal_json(st.causality, st.owner)}
 
 
 # Serve the built frontend (./dist) when present.

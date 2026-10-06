@@ -2,7 +2,7 @@ import { useSyncExternalStore, type ReactNode } from "react";
 import { zh } from "./zh";
 import { en } from "./en";
 
-// Minimal i18n core, using the same external-store pattern as lib/viewMode.ts:
+// Minimal i18n core (an external store read with useSyncExternalStore):
 //   - dictionaries are flat dotted key -> string; `zh` is the source of truth and `en` is
 //     type-checked against it, so a missing key is a compile error;
 //   - `{name}` interpolates, `**bold**` is rendered as <b> by `rt()`, so no JSX in dictionaries;

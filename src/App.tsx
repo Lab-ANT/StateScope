@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, type DataParams } from "./api";
+import { api, type DataParams, type DetectParams } from "./api";
 import type {
-  Aligned, ClusterResult, Channel, Correlation, DatasetInfo, Detected, LeadLagPair, Meta, Segment, SeriesData, Selection, Stage, StateLink, StateProfile,
+  CausalityResult, Correlation, DatasetInfo, Detected, Meta, Segment, SeriesData, Selection, Stage,
 } from "./types";
+import { StateCausalView } from "./components/statecausal/StateCausalView";
+import { ENTITY_COLORS, paperStateColor, type SCSeries } from "./components/statecausal/model";
+import { stateEdges } from "./lib/stateCausal";
 import { MacWindow } from "./components/mac/MacWindow";
 import { Sidebar, type StageNavItem } from "./components/Sidebar";
 import { StagePanel, Field, Card, Note, SegToggle, Btn, type StepStatus } from "./components/ui";
@@ -10,65 +13,36 @@ import { cn } from "./lib/cn";
 import { SeriesChart } from "./components/SeriesChart";
 import { Sparkline } from "./components/Sparkline";
 import { StateRibbon } from "./components/StateRibbon";
-import { StateGallery, StateDetailModal } from "./components/StateGallery";
-import { StateTransitionGraph } from "./components/StateTransitionGraph";
-import { LeadLagRibbons } from "./components/LeadLagRibbons";
-import { StateLinkFlow } from "./components/StateLinkFlow";
 import { Heatmap } from "./components/Heatmap";
-import { ClusterCausalView } from "./components/ClusterCausalView";
-import { ThresholdSlider } from "./components/ThresholdSlider";
 import { KnowledgeModal } from "./components/KnowledgeModal";
 import { CalibrationModal } from "./components/CalibrationModal";
 import { buildKnowledge } from "./lib/knowledge";
-import { useViewMode } from "./lib/viewMode";
 import {
-  useT, tr, dyn, dynError, datasetLabel, datasetBackground, datasetNote, datasetSource, type Key,
+  useT, tr, dyn, dynError, datasetLabel, datasetBackground, datasetSource, type Key,
 } from "./i18n";
 
-const ORDER: Stage[] = ["data", "select", "detect", "align", "correlate", "causality"];
+const ORDER: Stage[] = ["data", "select", "detect", "correlate", "causality"];
 const LABEL_KEY: Record<Stage, Key> = {
-  data: "stage.data", select: "stage.select", detect: "stage.detect", align: "stage.align",
+  data: "stage.data", select: "stage.select", detect: "stage.detect",
   correlate: "stage.correlate", causality: "stage.causality",
 };
 const PREREQ: Record<Stage, Stage | null> = {
-  data: null, select: "data", detect: "select", align: "detect", correlate: "align", causality: "align",
+  data: null, select: "data", detect: "select", correlate: "detect", causality: "detect",
 };
-const CORR_KINDS = ["overall", "transition", "partial", "time_lagged", "structural", "state_link"];
+const MAX_POINTS = 1000; // must match the backend downsampling cap
 
-// Per-dataset stage defaults, applied automatically when the dataset changes so each case
-// starts from sensible parameters.
-type StageDefaults = {
-  selP?: { selector: string; K: number };
-  detP?: { win_size: number; step: number; nb_steps: number; n_states: number };
-  corrP?: { tolerance: number; max_lag: number; min_lift: number };
-  // Influence-flow thresholds: lagged strength and contemporaneous strength.
-  linkP?: { lagMin: number; syncMin: number };
-  causP?: { n_states: number; tau_max: number; pc_alpha: number; max_edges_per_regime: number };
+type DatasetDefaults = { selP?: { selector: string; K: number }; minLift?: number; minGain?: number };
+const DATASET_DEFAULTS: Record<string, DatasetDefaults> = {
+  petshop: { selP: { selector: "unlabeled", K: 4 }, minLift: 1.5 },
+  lemma_rca: { selP: { selector: "unlabeled", K: 4 }, minLift: 2.0, minGain: 1 }, // weak relations
+  wadi: { selP: { selector: "unlabeled", K: 3 }, minLift: 1.2 },
 };
-// Baseline defaults; individual datasets override selected stages below.
-const BASE_DEFAULTS: Required<StageDefaults> = {
-  selP: { selector: "issd", K: 3 },
-  detP: { win_size: 100, step: 50, nb_steps: 60, n_states: 6 },
-  corrP: { tolerance: 60, max_lag: 400, min_lift: 1.2 },
-  linkP: { lagMin: 0.3, syncMin: 0.85 },
-  causP: { n_states: 4, tau_max: 2, pc_alpha: 0.05, max_edges_per_regime: 10 },
-};
-const DATASET_DEFAULTS: Record<string, StageDefaults> = {
-  petshop: {
-    selP: { selector: "unlabeled", K: 4 },
-    detP: { win_size: 100, step: 30, nb_steps: 60, n_states: 6 },
-    corrP: { tolerance: 60, max_lag: 300, min_lift: 1.5 },
-    linkP: { lagMin: 0.8, syncMin: 0.85 },
-    causP: { n_states: 4, tau_max: 2, pc_alpha: 0.005, max_edges_per_regime: 6 },
-  },
-  lemma_rca: {
-    selP: { selector: "unlabeled", K: 4 },
-    detP: { win_size: 100, step: 30, nb_steps: 60, n_states: 8 },
-    corrP: { tolerance: 60, max_lag: 300, min_lift: 2.0 },
-    linkP: { lagMin: 0.6, syncMin: 0.85},
-    causP: { n_states: 3, tau_max: 1, pc_alpha: 0.01, max_edges_per_regime: 8 },
-  },
-};
+const BASE_DETECT: DetectParams = { win_size: 100, step: 50, nb_steps: 60, n_states: 0, min_seg_len: 0 };
+
+// The form shows "auto" (null n_states) as 0
+function detectParams(base: DetectParams, d: Meta["metric_detect_defaults"] | null | undefined): DetectParams {
+  return d ? { ...base, ...d, n_states: d.n_states ?? 0, min_seg_len: d.min_seg_len ?? 0 } : base;
+}
 
 export function App() {
   const t = useT();
@@ -76,11 +50,8 @@ export function App() {
   const [series, setSeries] = useState<SeriesData[] | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [detected, setDetected] = useState<Detected[] | null>(null);
-  const [aligned, setAligned] = useState<Aligned | null>(null);
-  const [stateProfiles, setStateProfiles] = useState<StateProfile[] | null>(null);
-  const [stateDetail, setStateDetail] = useState<number | null>(null);
   const [correlations, setCorrelations] = useState<Record<string, Correlation> | null>(null);
-  const [causality, setCausality] = useState<ClusterResult | null>(null);
+  const [causality, setCausality] = useState<CausalityResult | null>(null);
 
   const [active, setActive] = useState<Stage>(() => {
     const s = new URLSearchParams(window.location.search).get("stage") as Stage | null;
@@ -90,17 +61,19 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const viewMode = useViewMode();
+  const [detectProgress, setDetectProgress] = useState<{ done: number; total: number } | null>(null);
+  const [detectPlan, setDetectPlan] = useState<{ entity: string; metric: string }[] | null>(null);
+  const [pickDraft, setPickDraft] = useState<Record<string, string[]> | null>(null);
+  const [minGain, setMinGain] = useState(5);
+  const [onlyCorroborated, setOnlyCorroborated] = useState(false);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [sourceMode, setSourceMode] = useState<"synthetic" | "public">("public");
-  // Land on PetShop by default; the synthetic set is still selectable.
-  const [dataP, setDataP] = useState<DataParams>({ dataset: "petshop", n_series: 3, lag: 150, seg_len: 400, n_useful: 3, n_noise: 5, seed: 1, scenario: "" });
-  const [selP, setSelP] = useState({ selector: "issd", K: 3 });
-  const [detP, setDetP] = useState({ win_size: 100, step: 50, nb_steps: 60, n_states: 6 });
-  const [corrP, setCorrP] = useState({ tolerance: 60, max_lag: 400, min_lift: 1.2 });
-  const [linkP, setLinkP] = useState({ lagMin: 0.3, syncMin: 0.85 });
-  const [causP, setCausP] = useState({ n_states: 4, tau_max: 2, pc_alpha: 0.05, max_edges_per_regime: 10 });
-  const [transTh, setTransTh] = useState(0);
+  // WADI by default; bootSession falls back to PetShop if it is not available locally
+  const [dataP, setDataP] = useState<DataParams>({ dataset: "wadi", n_series: 3, lag: 150, seg_len: 400, n_useful: 3, n_noise: 5, seed: 1 });
+  const [selP, setSelP] = useState({ selector: "unlabeled", K: 3 });
+  const [detP, setDetP] = useState<DetectParams>(BASE_DETECT);
+  const [minLift, setMinLift] = useState(1.2);
+  const [minOcc, setMinOcc] = useState(3);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [calibOpen, setCalibOpen] = useState(false);
 
@@ -129,28 +102,37 @@ export function App() {
     }
   }
 
-  const createSession = (override?: Partial<DataParams>) =>
+  async function loadSession(override?: Partial<DataParams>) {
+    const r = await api.createSession({ ...dataP, ...(override ?? {}) });
+    setDataP((p) => ({ ...p, dataset: r.meta.dataset ?? p.dataset }));
+    setMeta(r.meta); setSeries(r.series);
+    setSelection(null); setDetected(null); setCorrelations(null); setCausality(null);
+    setPickDraft(null);
+    setEverRun(new Set());
+    setActive("data");
+    applyDatasetDefaults(r.meta);
+  }
+  const createSession = (override?: Partial<DataParams>) => guard("data", () => loadSession(override));
+  // WADI requires a signed agreement and is not shipped, so fall back to PetShop if it is missing
+  const bootSession = () =>
     guard("data", async () => {
-      const r = await api.createSession({ ...dataP, ...(override ?? {}) });
-      setMeta(r.meta); setSeries(r.series);
-      setSelection(null); setDetected(null); setAligned(null); setStateProfiles(null); setCorrelations(null); setCausality(null);
-      setEverRun(new Set());
-      setActive("data");
-      applyDatasetDefaults(r.meta.dataset ?? "", r.meta.has_ground_truth !== false);
+      try {
+        await loadSession({ dataset: "wadi" });
+      } catch {
+        await loadSession({ dataset: "petshop" });
+      }
     });
 
-  // Switching dataset fully resets every stage, so no value leaks from the previous one.
-  function applyDatasetDefaults(id: string, hasTruth: boolean) {
-    const d = DATASET_DEFAULTS[id] ?? {};
-    setDetP(d.detP ?? BASE_DEFAULTS.detP);
-    setCorrP(d.corrP ?? BASE_DEFAULTS.corrP);
-    setLinkP(d.linkP ?? BASE_DEFAULTS.linkP);
-    setCausP(d.causP ?? BASE_DEFAULTS.causP);
-    // Selector: dataset override if any, else unlabelled when there is no ground truth.
-    setSelP(d.selP ?? (hasTruth ? BASE_DEFAULTS.selP : { selector: "unlabeled", K: 4 }));
+  // Fully reset every stage so no values leak from the previous dataset
+  function applyDatasetDefaults(m: Meta) {
+    const d = DATASET_DEFAULTS[m.dataset ?? ""] ?? {};
+    setDetP(detectParams(BASE_DETECT, m.metric_detect_defaults));
+    setMinLift(d.minLift ?? 1.2);
+    setMinOcc(3);
+    setMinGain(d.minGain ?? 5);
+    setSelP(d.selP ?? (m.has_ground_truth !== false ? { selector: "issd", K: 3 } : { selector: "unlabeled", K: 4 }));
   }
 
-  // Selecting a dataset loads it immediately.
   const pickDataset = (id: string) => {
     setDataP((p) => ({ ...p, dataset: id }));
     createSession({ dataset: id });
@@ -159,34 +141,44 @@ export function App() {
   const runSelect = () =>
     guard("select", async () => {
       const r = await api.select(sid!, selP);
-      setMeta(r.meta); setSelection(r.selection); setSeries(r.series);
+      setMeta(r.meta); setSelection(r.selection); setSeries(r.series); setPickDraft(null);
     });
-  const runDetect = () =>
-    guard("detect", async () => {
-      const r = await api.detect(sid!, detP);
+  const selectPicks = (picks: Record<string, string[]>) =>
+    guard("select", async () => {
+      const r = await api.select(sid!, { ...selP, picks });
+      setMeta(r.meta); setSelection(r.selection); setSeries(r.series); setPickDraft(null);
+    });
+  async function detectWith(dp: DetectParams) {
+    setDetected([]); setDetectPlan(null); setDetectProgress({ done: 0, total: 0 });
+    try {
+      const r = await api.detectStream(sid!, dp, (m) => {
+        if (m.type === "plan") {
+          setDetectPlan(m.items); setDetectProgress({ done: 0, total: m.items.length });
+          return;
+        }
+        setDetected((prev) => [...(prev ?? []), m.detected]);
+        setDetectProgress({ done: m.done, total: m.total });
+      });
       setMeta(r.meta); setDetected(r.detected);
-    });
-  // Calibration writes back the edited series; the backend then invalidates alignment and
-  // everything downstream, which the stage gating picks up from meta.completed.
+    } finally {
+      setDetectProgress(null); setDetectPlan(null);
+    }
+  }
+  const runDetect = () => guard("detect", () => detectWith(detP));
   const applyCalibration = (edits: { name: string; segments: Segment[] }[]) =>
     guard("detect", async () => {
       const r = await api.calibrate(sid!, { series: edits });
-      setMeta(r.meta); setDetected(r.detected);
+      setMeta(r.meta); setDetected(r.detected); setCorrelations(null); setCausality(null);
       setCalibOpen(false);
-    });
-  const runAlign = () =>
-    guard("align", async () => {
-      const r = await api.align(sid!);
-      setMeta(r.meta); setAligned(r.aligned); setStateProfiles(r.state_profiles);
     });
   const runCorrelate = () =>
     guard("correlate", async () => {
-      const r = await api.correlate(sid!, { kinds: CORR_KINDS, ...corrP });
+      const r = await api.correlate(sid!, { min_lift: minLift });
       setMeta(r.meta); setCorrelations(r.correlations);
     });
   const runCausality = () =>
     guard("causality", async () => {
-      const r = await api.causality(sid!, causP);
+      const r = await api.causality(sid!, { min_occ: minOcc });
       setMeta(r.meta); setCausality(r.causality);
     });
 
@@ -194,11 +186,13 @@ export function App() {
     if (!sid) return;
     setError(null);
     try {
-      setBusy("select"); setActive("select"); let r = await api.select(sid, selP); setMeta(r.meta); setSelection(r.selection); setSeries(r.series);
-      setBusy("detect"); setActive("detect"); let d = await api.detect(sid, detP); setMeta(d.meta); setDetected(d.detected);
-      setBusy("align"); setActive("align"); let a = await api.align(sid); setMeta(a.meta); setAligned(a.aligned); setStateProfiles(a.state_profiles);
-      setBusy("correlate"); setActive("correlate"); let c = await api.correlate(sid, { kinds: CORR_KINDS, ...corrP }); setMeta(c.meta); setCorrelations(c.correlations);
-      setBusy("causality"); setActive("causality"); let g = await api.causality(sid, causP); setMeta(g.meta); setCausality(g.causality);
+      setBusy("select"); setActive("select");
+      const r = await api.select(sid, selP);
+      setMeta(r.meta); setSelection(r.selection); setSeries(r.series); setPickDraft(null);
+      setBusy("detect"); setActive("detect");
+      await detectWith(detP);
+      setBusy("correlate"); setActive("correlate"); const c = await api.correlate(sid, { min_lift: minLift }); setMeta(c.meta); setCorrelations(c.correlations);
+      setBusy("causality"); setActive("causality"); const g = await api.causality(sid, { min_occ: minOcc }); setMeta(g.meta); setCausality(g.causality);
       setEverRun(new Set(ORDER));
     } catch (e) {
       setError(dynError(e));
@@ -213,13 +207,12 @@ export function App() {
       const s = await api.getSession(id);
       setMeta(s.meta); setSeries(s.series);
       setSelection(s.selection ?? null); setDetected(s.detected ?? null);
-      setAligned(s.aligned ?? null); setStateProfiles(s.state_profiles ?? null); setCorrelations(s.correlations ?? null);
-      setCausality(s.causality ?? null);
+      setCorrelations(s.correlations ?? null); setCausality(s.causality ?? null);
       setEverRun(new Set(s.meta.completed));
-      applyDatasetDefaults(s.meta.dataset ?? "", s.meta.has_ground_truth !== false);
+      applyDatasetDefaults(s.meta);
     } catch (e) {
       setError(t("data.loadSessionFailed", { id, err: dynError(e) }));
-      await api.createSession(dataP).then((r) => { setMeta(r.meta); setSeries(r.series); });
+      await loadSession({ dataset: "wadi" }).catch(() => loadSession({ dataset: "petshop" }));
     } finally {
       setBusy(null);
     }
@@ -229,16 +222,30 @@ export function App() {
     api.datasets().then((r) => setDatasets(r.datasets)).catch(() => {});
     const existing = new URLSearchParams(window.location.search).get("session");
     if (existing) attachSession(existing);
-    else createSession();
+    else bootSession();
   }, []);
 
-  // Keep the source toggle in sync with the group of the loaded dataset.
+  // Sync the "synthetic / public" toggle with the loaded dataset (also when attaching a session)
   useEffect(() => {
     const g = datasets.find((d) => d.id === meta?.dataset)?.group;
     if (g === "synthetic" || g === "public") setSourceMode(g);
   }, [meta?.dataset, datasets]);
 
   const T = meta?.T ?? 1;
+  const scSeries: SCSeries[] = (detected ?? []).map((d) => {
+    const values = series?.find((x) => x.name === d.entity)?.channels.find((c) => c.name === d.metric)?.values ?? [];
+    const stride = T > MAX_POINTS ? Math.ceil(T / MAX_POINTS) : 1;
+    return {
+      name: d.name, entity: d.entity, metric: d.metric, T,
+      x: values.map((_, i) => Math.min(T - 1, i * stride)), values,
+      segments: d.segments.map((g) => [g.start, g.end, g.state] as [number, number, number]),
+    };
+  });
+  const entityOfSeries = (name: string): string | undefined => detected?.find((d) => d.name === name)?.entity;
+  // The workbench looks raw curves up by series name, so give each "entity.metric" its own channel
+  const calibSeries: SeriesData[] | null = detected && series
+    ? detected.map((d) => ({ name: d.name, channels: (series.find((x) => x.name === d.entity)?.channels ?? []).filter((c) => c.name === d.metric) }))
+    : null;
   const hasTruth = meta?.has_ground_truth !== false;
   const curDataset = datasets.find((d) => d.id === (meta?.dataset ?? dataP.dataset));
 
@@ -274,21 +281,17 @@ export function App() {
           </div>
         </main>
       </div>
-      {stateDetail !== null && stateProfiles && (() => {
-        const p = stateProfiles.find((x) => x.state === stateDetail);
-        return p ? <StateDetailModal profile={p} onClose={() => setStateDetail(null)} /> : null;
-      })()}
-      {calibOpen && detected && series && (
+      {calibOpen && detected && calibSeries && (
         <CalibrationModal
           detected={detected}
-          series={series}
+          series={calibSeries}
           busy={busy === "detect"}
           onApply={applyCalibration}
           onClose={() => setCalibOpen(false)}
         />
       )}
       {knowledgeOpen && (() => {
-        const snap = { meta, series, selection, detected, aligned, correlations, causality };
+        const snap = { meta, series, selection, detected, correlations, causality };
         return (
           <KnowledgeModal
             report={buildKnowledge(snap)}
@@ -300,7 +303,6 @@ export function App() {
     </MacWindow>
   );
 
-  // ── Stage panels ──
   function renderStage() {
     switch (active) {
       case "data":
@@ -315,24 +317,20 @@ export function App() {
                   options={[{ value: "public", label: t("data.public") }, { value: "synthetic", label: t("data.synthetic") }]} />
                 <div className="flex flex-wrap gap-2">
                   {datasets
-                    .filter((d) => d.group === sourceMode && (viewMode === "full" || d.available))
+                    .filter((d) => d.group === sourceMode && d.available)
                     .map((d) => {
                     const activeD = (meta?.dataset ?? dataP.dataset) === d.id;
                     return (
-                      <button key={d.id} disabled={!d.available || !!busy}
-                        onClick={() => d.available && pickDataset(d.id)}
-                        title={d.available ? datasetSource(d.id, d.source) : datasetNote(d.id, d.note)}
+                      <button key={d.id} disabled={!!busy}
+                        onClick={() => pickDataset(d.id)}
+                        title={datasetSource(d.id, d.source)}
                         className={cn(
                           "max-w-[280px] rounded-md border px-3 py-2 text-left transition-colors",
                           activeD ? "border-accent bg-accent-soft" : "border-border bg-panel hover:bg-app-bg",
-                          !d.available && "cursor-not-allowed opacity-50",
                         )}>
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-fg">
-                          {datasetLabel(d.id, d.label)}
-                          {!d.available && <span className="rounded-sm bg-fg/[0.06] px-1 text-[9px] text-fg-faint">{t("data.unavailable")}</span>}
-                        </div>
+                        <div className="text-xs font-medium text-fg">{datasetLabel(d.id, d.label)}</div>
                         <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-fg-faint">
-                          {d.available ? datasetBackground(d.id, d.background) : datasetNote(d.id, d.note)}
+                          {datasetBackground(d.id, d.background)}
                         </div>
                       </button>
                     );
@@ -369,8 +367,8 @@ export function App() {
         return (
           <StagePanel
             title={t("stage.select")} tag="STAGE 2" status={statusOf("select")} {...nextProps}
-            desc={tr("select.desc")}
-            runLabel={t("select.runLabel")} onRun={runSelect}
+            desc={tr("select.descMetricPreview")}
+            runLabel={t("select.runPerEntity")} onRun={runSelect}
             controls={
               <>
                 <Field label={t("select.method")} type="select" value={selP.selector} onChange={(v) => setSelP({ ...selP, selector: v })}
@@ -381,7 +379,10 @@ export function App() {
                 {!hasTruth && <span className="self-end pb-1.5 text-[11px] text-fg-faint">{t("select.noTruthHint")}</span>}
               </>
             }>
-            {selection && series && <SelectionView channels={series[0].channels} selection={selection} />}
+            {series && (
+              <EntitySelection series={series} selection={selection}
+                draft={pickDraft} setDraft={setPickDraft} busy={!!busy} k={selP.K} onApply={selectPicks} />
+            )}
           </StagePanel>
         );
 
@@ -389,8 +390,8 @@ export function App() {
         return (
           <StagePanel
             title={t("stage.detect")} tag="STAGE 3" status={statusOf("detect")} {...nextProps}
-            desc={tr("detect.desc")}
-            runLabel={t("detect.runLabel")} onRun={runDetect}
+            desc={tr("detect.descMetric")}
+            runLabel={t("detect.runLabel")} onRun={runDetect} live
             actions={detected && (
               <Btn variant="outline" className="h-8 px-3 text-xs" onClick={() => setCalibOpen(true)}>
                 {t("detect.calibrate")}
@@ -398,61 +399,19 @@ export function App() {
             )}
             controls={
               <>
-                <Field label={t("detect.fieldWin")} type="number" min={50} max={300} step={10} value={detP.win_size} onChange={(v) => setDetP({ ...detP, win_size: +v })} />
-                <Field label={t("detect.fieldStep")} type="number" min={10} max={100} step={10} value={detP.step} onChange={(v) => setDetP({ ...detP, step: +v })} />
-                <Field label={t("detect.fieldNbSteps")} type="number" min={20} max={120} step={10} value={detP.nb_steps} onChange={(v) => setDetP({ ...detP, nb_steps: +v })} />
-                <Field label={t("detect.fieldNStates")} type="number" min={2} max={12} value={detP.n_states} onChange={(v) => setDetP({ ...detP, n_states: +v })} />
+                <Field label={t("detect.fieldWin")} type="number" min={20} max={300} step={10} value={detP.win_size} onChange={(v) => setDetP({ ...detP, win_size: +v })} />
+                <Field label={t("detect.fieldStep")} type="number" min={5} max={100} step={5} value={detP.step} onChange={(v) => setDetP({ ...detP, step: +v })} />
+                <Field label={t("detect.fieldNbSteps")} type="number" min={5} max={120} step={5} value={detP.nb_steps} onChange={(v) => setDetP({ ...detP, nb_steps: +v })} />
+                <Field label={t("detect.fieldNStatesAuto")} type="number" min={0} max={12}
+                  value={detP.n_states} onChange={(v) => setDetP({ ...detP, n_states: +v })} />
+                <Field label={t("detect.fieldMinSeg")} type="number" min={0} max={500} step={10} value={detP.min_seg_len} onChange={(v) => setDetP({ ...detP, min_seg_len: +v })} />
               </>
             }>
-            {detected && (
-              <Card>
-                {detected.map((d) => (
-                  <div key={d.name} className="flex items-center gap-3 py-1.5">
-                    <span className="w-16 shrink-0 truncate text-xs text-fg-muted" title={dyn(d.name)}>{dyn(d.name)}</span>
-                    <div className="flex-1"><StateRibbon segments={d.segments} T={T} /></div>
-                    <span className="w-28 shrink-0 text-right font-mono text-[11px] text-fg-faint">
-                      {d.ari != null
-                        ? t("detect.summary", { n: d.num_states, ari: String(d.ari) })
-                        : t("detect.summaryNoAri", { n: d.num_states })}
-                    </span>
-                  </div>
-                ))}
-              </Card>
+            {detectProgress && (
+              <Note className="mb-3">{t("detect.progress", { done: detectProgress.done, total: detectProgress.total || "?" })}</Note>
             )}
-          </StagePanel>
-        );
-
-      case "align":
-        return (
-          <StagePanel
-            title={t("stage.align")} tag="STAGE 1·3" status={statusOf("align")} {...nextProps}
-            desc={tr("align.desc")}
-            runLabel={t("align.runLabel")} onRun={runAlign}>
-            {aligned && (
-              <div className="flex flex-col gap-4">
-                {stateProfiles && stateProfiles.length > 0 && (
-                  <StateGallery profiles={stateProfiles} onOpen={setStateDetail} />
-                )}
-                <Card title={t("align.ribbonTitle")}>
-                  {aligned.sequences.map((d) => (
-                    <div key={d.name} className="flex items-center gap-3 py-1.5">
-                      <span className="w-16 shrink-0 truncate text-xs text-fg-muted" title={dyn(d.name)}>{dyn(d.name)}</span>
-                      <div className="flex-1"><StateRibbon segments={d.segments} T={T} /></div>
-                    </div>
-                  ))}
-                </Card>
-                {aligned.transition_graph && aligned.transition_graph.edges.length > 0 && (
-                  <Card title={t("align.transTitle")}>
-                    <Note>
-                      {t("align.transNote")}
-                      <b className="font-medium text-accent">{t("align.transNoteMain")}</b>
-                      {t("align.transNoteTail")}
-                    </Note>
-                    <div className="mt-3"><ThresholdSlider value={transTh} onChange={setTransTh} label={t("align.transThreshold")} /></div>
-                    <StateTransitionGraph graph={aligned.transition_graph} threshold={transTh} />
-                  </Card>
-                )}
-              </div>
+            {detected && (detectPlan || detected.length > 0) && (
+              <MetricDetectedView detected={detected} T={T} plan={detectPlan} series={series} />
             )}
           </StagePanel>
         );
@@ -461,55 +420,41 @@ export function App() {
         return (
           <StagePanel
             title={t("stage.correlate")} tag="STAGE 4" status={statusOf("correlate")} {...nextProps}
-            desc={tr("correlate.desc")}
+            desc={tr("correlate.descPaper")}
             runLabel={t("correlate.runLabel")} onRun={runCorrelate}
             controls={
-              <>
-                <Field label={t("correlate.fieldTolerance")} type="number" min={10} max={200} step={10} value={corrP.tolerance} onChange={(v) => setCorrP({ ...corrP, tolerance: +v })} />
-                <Field label={t("correlate.fieldMaxLag")} type="number" min={50} max={600} step={50} value={corrP.max_lag} onChange={(v) => setCorrP({ ...corrP, max_lag: +v })} />
-                <Field label={t("correlate.fieldMinLift")} type="number" min={1} max={5} step={0.1} value={corrP.min_lift} onChange={(v) => setCorrP({ ...corrP, min_lift: +v })} />
-              </>
+              <Field label={t("correlate.fieldMinLift")} type="number" min={1} max={5} step={0.1} value={minLift} onChange={(v) => setMinLift(+v)} />
             }>
-            {correlations && (
-              <div className="flex flex-col gap-4">
-                {correlations.state_link && aligned && (
-                  <StateLinkFlow aligned={aligned} links={correlations.state_link.pairs as unknown as StateLink[]} T={T}
-                    lagMin={linkP.lagMin} syncMin={linkP.syncMin}
-                    onLagMin={(v) => setLinkP((p) => ({ ...p, lagMin: v }))}
-                    onSyncMin={(v) => setLinkP((p) => ({ ...p, syncMin: v }))} />
-                )}
-                {correlations.time_lagged && aligned && (
-                  <LeadLagRibbons aligned={aligned} pairs={correlations.time_lagged.pairs as unknown as LeadLagPair[]} T={T} />
-                )}
-                <div className="flex flex-wrap gap-4">
-                  {([["overall", t("correlate.heatOverall")], ["transition", t("correlate.heatTransition")], ["time_lagged", t("correlate.heatTimeLagged")]] as const).map(([k, title]) =>
-                    correlations[k]?.matrix ? (
-                      <Heatmap key={k} title={title} matrix={correlations[k].matrix!} labels={correlations[k].labels!} />
-                    ) : null
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-4">
-                  {correlations.time_lagged && (
-                    <Card title={t("correlate.leadLagTitle")} className="min-w-[280px] flex-1">
-                      <DataTable head={[t("correlate.colLeader"), t("correlate.colFollower"), "lag", "NMI"]}
-                        rows={(correlations.time_lagged.pairs as unknown as LeadLagPair[]).map((p) => [dyn(p.leader), dyn(p.follower), mono(p.lag), mono(p.nmi.toFixed(3))])} />
-                    </Card>
+            {correlations && (() => {
+              // Side by side only for <= 10 metrics, so heatmap cells don't get too small
+              const overall = correlations.overall;
+              const half = (overall?.labels?.length ?? 0) <= 10;
+              return (
+                <div className={cn("grid grid-cols-1 gap-4", half && "xl:grid-cols-2")}>
+                  {overall?.matrix && (
+                    <Heatmap title={t("correlate.heatOverall")} matrix={overall.matrix} labels={overall.labels!}
+                      groups={overall.labels!.map(entityOfSeries)} fill maxScale={half ? 1.3 : 1} className="h-full min-w-0" />
                   )}
                   {correlations.partial && (
-                    <Card title={t("correlate.partialTitle")} className="min-w-[280px] flex-1">
-                      <DataTable head={["from", "to", "lift"]}
-                        rows={correlations.partial.pairs.slice(0, 8).map((p: any) => [dyn(p.from), dyn(p.to), mono(p.lift)])} />
-                    </Card>
-                  )}
-                  {correlations.structural && (
-                    <Card title={t("correlate.structuralTitle")} className="min-w-[280px] flex-1">
-                      <DataTable head={["from", "to", "state", t("correlate.colRelation")]}
-                        rows={correlations.structural.pairs.slice(0, 8).map((p: any) => [dyn(p.from), dyn(p.to), `S${p.state}`, p.relation])} />
+                    <Card title={t("correlate.partialTitle")} className="h-full min-w-0">
+                      {correlations.partial.pairs.length === 0 && <Note>{t("correlate.partialEmpty")}</Note>}
+                      <div className="overflow-x-auto">
+                        <DataTable head={[t("correlate.colFrom"), t("correlate.colTo"), t("correlate.colScope"), "Jaccard", "lift"]}
+                          rows={correlations.partial.pairs.slice(0, half ? 12 : 10).map((p: any) => {
+                            const a = parseStateRef(p.from, entityOfSeries), b = parseStateRef(p.to, entityOfSeries);
+                            const scope = a.entity && b.entity
+                              ? <span className={cn("whitespace-nowrap text-[11px]", a.entity === b.entity ? "text-fg-faint" : "font-medium text-accent")}>
+                                  {t(a.entity === b.entity ? "correlate.sameEntity" : "correlate.crossEntity")}
+                                </span>
+                              : "—";
+                            return [<StateRef r={a} />, <StateRef r={b} />, scope, mono(p.jaccard ?? p.score), mono(p.lift)];
+                          })} />
+                      </div>
                     </Card>
                   )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </StagePanel>
         );
 
@@ -526,13 +471,28 @@ export function App() {
             )}
             controls={
               <>
-                <Field label={t("causality.fieldNStates")} type="number" min={2} max={8} value={causP.n_states} onChange={(v) => setCausP({ ...causP, n_states: +v })} />
-                <Field label="tau_max" type="number" min={1} max={6} value={causP.tau_max} onChange={(v) => setCausP({ ...causP, tau_max: +v })} />
-                <Field label="pc_alpha" type="number" min={0.005} max={0.3} step={0.005} value={causP.pc_alpha} onChange={(v) => setCausP({ ...causP, pc_alpha: +v })} />
-                <Field label={t("causality.fieldMaxEdges")} type="number" min={0} max={40} value={causP.max_edges_per_regime} onChange={(v) => setCausP({ ...causP, max_edges_per_regime: +v })} />
+                <Field label={t("causality.minOcc")} type="number" min={1} max={50} value={minOcc} onChange={(v) => setMinOcc(Math.max(1, +v))} />
+                <Field label={t("causality.minGain")} type="number" min={0} step={1} value={minGain} onChange={(v) => setMinGain(Math.max(0, +v))} />
+                {causality?.found.some((m) => m.params.corroborated !== undefined) && (
+                  <label className="flex h-8 items-center gap-1.5 self-end text-xs text-fg-muted" title={t("scf.corroboratedTip")}>
+                    <input type="checkbox" className="accent-accent" checked={onlyCorroborated} onChange={(e) => setOnlyCorroborated(e.target.checked)} />
+                    {t("causality.onlyCorroborated")}
+                  </label>
+                )}
               </>
             }>
-            {causality && <ClusterCausalView result={causality} />}
+            {causality && (
+              <div className="flex flex-col gap-3">
+                <Note>{tr("causality.stateSummary", {
+                  algo: causality.algo.toUpperCase(), k: causality.events.length, d: causality.dropped.length,
+                  m: minOcc, f: causality.found.length, t: causality.runtime_s.toFixed(2),
+                })}</Note>
+                {causality.events.length < 2 && <Note className="text-sig-run">{t("causality.fewEvents")}</Note>}
+                <StateCausalView dataset={meta?.dataset ?? "statescope"} results={scSeries}
+                  edges={stateEdges(causality).filter((e) => e.gain >= minGain && (!onlyCorroborated || e.mech.params.corroborated))}
+                  resultId={`${causality.algo}|${causality.runtime_s}|${causality.found.length}|${minGain}|${onlyCorroborated}`} />
+              </div>
+            )}
           </StagePanel>
         );
     }
@@ -545,61 +505,12 @@ function mono(v: ReactLike) {
 
 type ReactLike = string | number;
 
-// Before/after view of selection: kept vs dropped channels, one sparkline each, so the
-// state structure in the kept ones is visible at a glance.
-function SelectionView({ channels, selection }: { channels: Channel[]; selection: Selection }) {
-  const t = useT();
-  const selected = channels.filter((c) => c.selected);
-  const dropped = channels.filter((c) => !c.selected);
-  const Col = ({ title, items, kept }: { title: string; items: Channel[]; kept: boolean }) => (
-    <Card className="min-w-[280px] flex-1">
-      <div className="mb-1 flex items-center gap-2 text-sm">
-        <span className={cn("h-2 w-2 rounded-full", kept ? "bg-sig-done" : "bg-fg-faint/40")} />
-        <span className="font-medium text-fg">{title}</span>
-        <span className="text-fg-faint">· {items.length}</span>
-      </div>
-      <div className="flex flex-col divide-y divide-border-soft">
-        {items.map((c) => (
-          <div key={c.name} className="flex items-center gap-3 py-1.5">
-            <span className={cn("w-24 shrink-0 truncate text-xs", kept ? "font-medium text-fg" : "text-fg-faint")}
-              title={dyn(c.name)}>{dyn(c.name)}</span>
-            <div className="flex-1"><Sparkline values={c.values} color={kept ? "#2ca35a" : "#b8bdc6"} /></div>
-          </div>
-        ))}
-        {items.length === 0 && <div className="py-3 text-xs text-fg-faint">{t("common.none")}</div>}
-      </div>
-    </Card>
-  );
-  return (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span className="text-sm text-fg-muted">{t("select.summary")}</span>
-          <span className="font-mono text-base tabular-nums text-fg">{channels.length}</span>
-          <span className="text-fg-faint">{t("select.toSelected")}</span>
-          <span className="font-mono text-lg font-semibold tabular-nums text-sig-done">{selected.length}</span>
-          <span className="text-xs text-fg-faint">{t("select.methodTag", { name: selection.selector })}</span>
-          {selection.selector === "issd" && selection.qf && selection.qf.length > 0 && (
-            <span className="text-xs text-fg-faint">· QF {JSON.stringify(selection.qf)} · CF {JSON.stringify(selection.cf)}</span>
-          )}
-        </div>
-        <Note>{t("select.note")}</Note>
-      </Card>
-      <div className="flex flex-wrap gap-4">
-        <Col title={t("select.keptTitle")} items={selected} kept />
-        <Col title={t("select.droppedTitle")} items={dropped} kept={false} />
-      </div>
-    </div>
-  );
-}
-
 const EXTRA_KEY: Record<string, Key> = {
   dependency_graph: "data.extraDependencyGraph",
   root_causes: "data.extraRootCauses",
   pod_node: "data.extraPodNode",
 };
 
-// Dataset overview: counts, length, channels, states, ground truth and provenance.
 function DataStats({ meta }: { meta: Meta }) {
   const t = useT();
   const s = meta.stats!;
@@ -654,7 +565,6 @@ function DataStats({ meta }: { meta: Meta }) {
   );
 }
 
-// Minimal table: header plus rows.
 function DataTable(props: { head: string[]; rows: (string | JSX.Element)[][] }) {
   return (
     <table className="w-full border-collapse text-xs">
@@ -675,5 +585,199 @@ function DataTable(props: { head: string[]; rows: (string | JSX.Element)[][] }) 
         ))}
       </tbody>
     </table>
+  );
+}
+
+// Clicking a card toggles the draft pick; "Apply" submits by name.
+function EntitySelection(props: {
+  series: SeriesData[];
+  selection: Selection | null;
+  draft: Record<string, string[]> | null;
+  setDraft: (d: Record<string, string[]> | null) => void;
+  busy: boolean;
+  k: number;
+  onApply: (picks: Record<string, string[]>) => void;
+}) {
+  const t = useT();
+  const { series, selection, draft } = props;
+  const applied = selection?.picks ?? null;
+  const cur = draft ?? applied ?? {};
+  const norm = (p: Record<string, string[]> | null) =>
+    JSON.stringify(series.map((s) => [s.name, [...(p?.[s.name] ?? [])].sort()]).filter(([, ms]) => (ms as string[]).length));
+  const dirty = draft !== null && norm(draft) !== norm(applied);
+  const n = Object.values(cur).reduce((k, ms) => k + ms.length, 0);
+  const setEntity = (e: string, ms: string[]) => props.setDraft({ ...cur, [e]: ms });
+  const toggle = (e: string, m: string) => {
+    const list = cur[e] ?? [];
+    setEntity(e, list.includes(m) ? list.filter((x) => x !== m) : [...list, m]);
+  };
+  const ranking = selection?.ranking;
+  // Original channel order until a ranking exists
+  const ordered = (s: SeriesData) => {
+    const r = ranking?.[s.name];
+    const byName = new Map(s.channels.map((c) => [c.name, c]));
+    return r
+      ? r.map((x, i) => ({ ch: byName.get(x.name)!, score: x.score as number | null, rank: i + 1 })).filter((x) => x.ch)
+      : s.channels.map((c) => ({ ch: c, score: null as number | null, rank: null as number | null }));
+  };
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-fg-muted">{t("select.pickedCount", { n })}</span>
+          {dirty && <span className="text-[11px] text-sig-run">{t("select.unapplied")}</span>}
+          {dirty && <Btn variant="outline" className="h-8 px-3 text-xs" onClick={() => props.setDraft(null)}>{t("select.revert")}</Btn>}
+          <Btn className="h-8 px-3 text-xs" disabled={props.busy || n === 0 || (!dirty && applied !== null)}
+            onClick={() => props.onApply(Object.fromEntries(Object.entries(cur).filter(([, ms]) => ms.length)))}>
+            {t("select.applyPicks", { n })}
+          </Btn>
+        </div>
+      </div>
+      <Note>{t(ranking ? "select.entityHint" : "select.entityHintNoRank")}</Note>
+
+      <div className="mt-4 flex flex-col gap-5">
+        {series.map((s, si) => {
+          const color = ENTITY_COLORS[si % ENTITY_COLORS.length];
+          const picked = cur[s.name] ?? [];
+          const items = ordered(s);
+          const mx = Math.max(1e-9, ...items.map((x) => x.score ?? 0));
+          return (
+            <section key={s.name} className="border-l-[3px] pl-3" style={{ borderColor: color }}>
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="text-sm font-semibold" style={{ color }}>{dyn(s.name)}</span>
+                <span className="font-mono text-[11px] text-fg-faint">{t("select.entityPicked", { k: picked.length, m: s.channels.length })}</span>
+                <div className="ml-auto flex gap-3 text-[11px]">
+                  {ranking?.[s.name] && (
+                    <button className="text-fg-muted hover:text-accent" onClick={() => setEntity(s.name, items.slice(0, props.k).map((x) => x.ch.name))}>
+                      {t("select.topK", { k: props.k })}
+                    </button>
+                  )}
+                  <button className="text-fg-muted hover:text-accent" onClick={() => setEntity(s.name, s.channels.map((c) => c.name))}>{t("ms.all")}</button>
+                  <button className="text-fg-muted hover:text-accent" onClick={() => setEntity(s.name, [])}>{t("ms.none")}</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                {items.map(({ ch, score, rank }) => {
+                  const on = picked.includes(ch.name);
+                  return (
+                    <button key={ch.name} onClick={() => toggle(s.name, ch.name)} aria-pressed={on}
+                      className={cn("group flex flex-col gap-1 rounded-md border px-3 py-2 text-left transition-colors",
+                        on ? "border-accent bg-accent-soft/40" : "border-border-soft bg-panel hover:border-accent/50")}>
+                      <div className="flex items-center gap-2">
+                        <span className={cn("flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border text-[9px] leading-none",
+                          on ? "border-accent bg-accent text-white" : "border-fg-faint/50 text-transparent")}>✓</span>
+                        <span className={cn("font-mono text-xs", on ? "font-semibold text-fg" : "text-fg-muted")}>{dyn(ch.name)}</span>
+                        {rank !== null && <span className="font-mono text-[10px] text-fg-faint">#{rank}</span>}
+                        {score !== null && (
+                          <span className="ml-auto flex items-center gap-1.5" title={t("select.scoreTip", { s: score.toFixed(3) })}>
+                            <span className="inline-block h-1 w-14 rounded-full bg-fg/10">
+                              <span className="block h-1 rounded-full" style={{ width: `${Math.max(4, (100 * score) / mx)}%`, background: on ? color : "#9ca3af" }} />
+                            </span>
+                            <span className="font-mono text-[10px] tabular-nums text-fg-faint">{score.toFixed(2)}</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className={cn("transition-opacity", on ? "opacity-100" : "opacity-45 group-hover:opacity-70")}>
+                        <Sparkline values={ch.values} color={on ? color : "#9ca3af"} height={30} fluid />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// States are numbered by level (0 = lowest). While streaming, `plan` lists every metric: done rows show states, the first pending one is running, the rest queued.
+function MetricDetectedView({ detected, T, plan, series }: {
+  detected: Detected[]; T: number; plan?: { entity: string; metric: string }[] | null; series?: SeriesData[] | null;
+}) {
+  const t = useT();
+  const valuesOf = (entity: string, metric: string) =>
+    series?.find((s) => s.name === entity)?.channels.find((c) => c.name === metric)?.values;
+  type Row = Detected | { name: string; entity: string; metric: string; pending: "running" | "queued" };
+  let running = false;
+  const rowsAll: Row[] = plan
+    ? plan.map((p) => {
+        const d = detected.find((x) => x.entity === p.entity && x.metric === p.metric);
+        if (d) return d;
+        const pending = running ? "queued" as const : "running" as const;
+        running = true;
+        return { name: `${p.entity}.${p.metric}`, entity: p.entity, metric: p.metric, pending };
+      })
+    : detected;
+  const groups: [string, Row[]][] = [];
+  for (const d of rowsAll) {
+    const ent = d.entity;
+    const last = groups[groups.length - 1];
+    if (last && last[0] === ent) last[1].push(d);
+    else groups.push([ent, [d]]);
+  }
+  return (
+    <Card>
+      <div className="flex flex-col gap-3">
+        {groups.map(([ent, rows]) => (
+          <div key={ent}>
+            <div className="mb-1 text-xs font-medium text-fg">{dyn(ent)}</div>
+            {rows.map((d) => (
+              <div key={d.name} className="flex items-center gap-3 py-1">
+                <span className="w-24 shrink-0 truncate font-mono text-[11px] text-fg-muted" title={dyn(d.metric)}>{dyn(d.metric)}</span>
+                {"pending" in d ? (
+                  <>
+                    <div className={cn("h-9 flex-1 rounded",
+                      d.pending === "running" ? "animate-pulse border border-accent bg-accent-soft" : "border border-dashed border-border")} />
+                    <span className={cn("w-32 shrink-0 whitespace-nowrap text-right font-mono text-[11px]", d.pending === "running" ? "text-accent" : "text-fg-faint")}>
+                      {t(d.pending === "running" ? "detect.pending" : "detect.queued")}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex-1"><StateRibbon segments={d.segments} T={T} height={36} values={valuesOf(d.entity, d.metric)} /></div>
+                    <span className="w-32 shrink-0 whitespace-nowrap text-right font-mono text-[11px] text-fg-faint">
+                      {t("detect.summaryMetric", { n: d.num_states, segs: d.segments.length })}
+                    </span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// "series:S3" -> entity / metric / state
+interface StateRefParts { entity?: string; metric: string; name: string; state: string }
+function parseStateRef(label: string, entityOf: (name: string) => string | undefined): StateRefParts {
+  const i = label.lastIndexOf(":S");
+  const name = i >= 0 ? label.slice(0, i) : label;
+  const state = i >= 0 ? label.slice(i + 2) : "";
+  const entity = entityOf(name);
+  const metric = entity && name.startsWith(`${entity}.`) ? name.slice(entity.length + 1) : "";
+  return { entity, metric, name, state };
+}
+
+function StateRef({ r }: { r: StateRefParts }) {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      {r.entity && r.metric ? (
+        <>
+          <span className="text-fg-faint">{dyn(r.entity)}</span>
+          <span className="font-medium text-fg">{dyn(r.metric)}</span>
+        </>
+      ) : (
+        <span className="text-fg">{dyn(r.name)}</span>
+      )}
+      {r.state !== "" && (
+        <span className="rounded px-1 font-mono text-[10px] font-semibold text-[#262626]" style={{ background: paperStateColor(Number(r.state)) }}>
+          {r.state}
+        </span>
+      )}
+    </span>
   );
 }

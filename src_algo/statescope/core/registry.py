@@ -1,19 +1,4 @@
-"""A tiny plugin registry, realising the paper's "versatile analytical toolkit" goal.
-
-Each stage exposes several interchangeable methods (ISSD vs ranking selectors,
-Time2State vs E2USD, overall vs transition correlation). The registry lets the pipeline
-and the demo look a method up by name without importing every implementation.
-
-Usage
-----
-    from statescope.core.registry import register, get
-
-    @register("detector", "e2usd")
-    class E2USDDetector(StateDetector):
-        ...
-
-    Detector = get("detector", "e2usd")
-"""
+"""Tiny plugin registry: look up a stage implementation by name (``register`` / ``get``)."""
 
 from __future__ import annotations
 

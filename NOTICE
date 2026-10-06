@@ -18,9 +18,10 @@ Slimmed and modernised ports, kept under their original licences:
 The detector pipeline (encode, DPGMM, vote) also follows Time2State
 (Wang et al., SIGMOD 2023) — https://github.com/Lab-ANT/Time2State
 
-PCMCI+ is used through the `tigramite` package (Runge et al.), which is
-GPL-3.0 licensed and is an optional dependency installed by the user; no
-tigramite code is included in this repository.
+## Independent implementations — src_algo/statescope/stage5_causality/event/
+
+NIAGARA (AAAI 2026) is implemented from its paper; no code from the authors'
+reference implementation is included.
 
 ## Vendored data — data_origin/petshop/
 

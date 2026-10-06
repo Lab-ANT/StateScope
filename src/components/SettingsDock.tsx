@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "../lib/cn";
 import { setLang, useLang, useT } from "../i18n";
-import { IS_DEV, setViewMode, useViewMode } from "../lib/viewMode";
 
-// Floating capsule holding the environment settings: language and, in DEV builds, the view
-// mode. These are not part of the pipeline, so they stay out of the sidebar and header:
+// Floating language capsule, kept out of the sidebar and header:
 //   - fixed to the viewport, so it can be dragged out of the window onto the desktop area;
 //   - free placement, snapping only when released near a viewport edge; position persists;
 //   - collapsible to a small ball showing the active language code;
@@ -47,7 +45,6 @@ function readDock(): Dock {
 export function SettingsDock() {
   const t = useT();
   const lang = useLang();
-  const mode = useViewMode();
 
   const [dock, setDock] = useState<Dock>(readDock);
   const [dragging, setDragging] = useState(false);
@@ -143,9 +140,6 @@ export function SettingsDock() {
           className="relative flex h-full w-full items-center justify-center rounded-full font-mono text-[11px] font-semibold text-fg-muted transition-colors hover:text-fg"
         >
           {lang === "zh" ? "ZH" : "EN"}
-          {IS_DEV && mode === "full" && (
-            <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-sig-run" />
-          )}
         </button>
       </div>
     );
@@ -170,16 +164,6 @@ export function SettingsDock() {
         ))}
       </Group>
 
-      {IS_DEV && (
-        <Group label={t("settings.viewMode")} badge="DEV">
-          {(["preview", "full"] as const).map((v) => (
-            <Seg key={v} active={mode === v} onClick={() => setViewMode(v)}>
-              {t(v === "preview" ? "settings.viewPreview" : "settings.viewFull")}
-            </Seg>
-          ))}
-        </Group>
-      )}
-
       <button
         data-no-drag
         onClick={() => setCollapsed(true)}
@@ -194,14 +178,9 @@ export function SettingsDock() {
 }
 
 // One labelled group of segmented buttons.
-function Group({ label, badge, children }: { label: string; badge?: string; children: React.ReactNode }) {
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-1.5" title={label}>
-      {badge && (
-        <span className="rounded bg-sig-run/15 px-1 font-mono text-[9px] font-medium uppercase text-sig-run">
-          {badge}
-        </span>
-      )}
       <div data-no-drag className="inline-flex rounded-full border border-border bg-app-bg p-0.5">
         {children}
       </div>

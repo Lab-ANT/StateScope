@@ -1,7 +1,7 @@
 """E2USD DDEM network and FNCC loss.
 
 Vendored verbatim from the modernised torch-2.x port in labelState. Original paper:
-E2USD（WWW'24），《Efficient-yet-effective Unsupervised State Detection》。
+E2USD (WWW'24), "Efficient-yet-effective Unsupervised State Detection".
 """
 
 import numpy as np

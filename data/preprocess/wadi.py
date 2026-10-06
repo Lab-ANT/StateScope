@@ -71,8 +71,8 @@ WADI_INFO = DatasetInfo(
     "required, not redistributable",
     background="A real water-distribution SCADA testbed: three phases (P1 primary grid -> P2 "
     "secondary grid -> P3 return grid), each driven by its own PLC with water flowing one way. "
-    "Each phase is treated as one object whose channels are selected continuous sensors, so "
-    "causality between phases corresponds to physical water propagation. 16 days of continuous "
+    "Each phase is one entity whose metrics are selected continuous sensors, so state causality "
+    "across phases follows physical water propagation. 16 days of continuous "
     "operation containing 15 attacks (~6% of samples). Ground truth is a binary attack/normal "
     "flag rather than per-timestep states, provided via extra.",
     available=True,

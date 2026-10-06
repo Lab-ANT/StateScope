@@ -43,15 +43,14 @@ const DATASETS_ZH: Record<string, DatasetText> = {
     label: "LEMMA-RCA（真实多域 RCA）",
     background:
       "真实多域根因分析基准（NEC 微服务 / 云计算）：每个 pod 6 个运行指标（CPU、内存、收发包率、" +
-      "收发带宽），分块平均降采样到约 6000 步。检测可发现真实运行 regime；含 pod→node 放置拓扑，" +
-      "供因果阶段参考。真值为故障根因标签，而非逐时刻状态。",
+      "收发带宽），分块平均降采样到约 6000 步，含 pod→node 放置拓扑。真值为故障根因标签，而非逐时刻状态。",
     note: "原始数据需放在 data_origin/lemma_rca/（CC-BY-ND，不入库）；首次使用自动预处理并缓存。",
   },
   wadi: {
     label: "WADI（真实配水测试床）",
     background:
       "真实配水 SCADA 测试床：三个相位（P1 主网格 → P2 次网格 → P3 回水网格）各由独立 PLC 控制、" +
-      "水流单向流动。把每个相位当作一个对象，相位内精选连续传感器为通道，于是相位间因果对应物理" +
+      "水流单向流动。每个相位是一个实体，相位内精选连续传感器为指标，于是跨相位的状态因果对应物理" +
       "水流传播。16 天连续运行含 15 次攻击（约 6% 样本）。真值为攻击/正常二值，随 extra 提供。",
     note: "原始数据需放在 data_origin/WaDi.zip（SUTD iTrust 协议，不入库）；首次使用自动预处理并缓存。",
     source: "SUTD iTrust · WADI.A2_19 Nov 2019 · Ahmed et al., CySWATER 2017 · 需签署协议、不可再分发",
@@ -73,7 +72,7 @@ export function datasetSource(id: string, fallback: string): string {
 
 // ── Term table ──────────────────────────────────────────────────────────────────────────
 // Channel, series and phase names (data/preprocess/{petshop,lemma_rca,wadi}.py), plus the
-// reference-topology notes and error messages emitted by src_api/.
+// error messages emitted by src_api/.
 const TERMS: Record<string, string> = {
   // PetShop channels
   "latency p90": "延迟p90",
@@ -96,18 +95,13 @@ const TERMS: Record<string, string> = {
   "P1 primary grid": "P1 主网格",
   "P2 secondary grid": "P2 次网格",
   "P3 return grid": "P3 回水网格",
-  // Reference-topology notes (src_api/serialize.py::gt_topology_edges)
-  "Service call graph (A->B means A calls B); a prior, not causal ground truth":
-    "服务调用图（A→B 表示 A 调用 B）；论文注明为先验，非因果真值",
-  "Physical water-flow direction (directed ground truth)": "物理水流方向（有向真值）",
-  "Pod pairs on the same physical node (shared CPU/memory; resource contention should cause coupling)":
-    "同一物理节点上的 pod 对（共享 CPU/内存，资源争用应导致耦合）",
-  "This dataset has no ground-truth topology reference": "该数据集无拓扑真值参考",
   // Backend errors (src_api/session.py)
   "This dataset has no ground-truth state labels; use the unlabeled selector.":
     "该数据集无真值状态标注，请改用「无标注」选择方法。",
   "Run state detection first.": "请先运行状态检测。",
-  "Run state alignment first.": "请先运行状态对齐。",
+  "Nothing to detect: select at least one metric of one entity in indicator selection first.":
+    "没有可检测的序列：请先在指标选择中选中至少一个实体的指标。",
+  "Select at least one metric of one entity.": "至少选择一个实体的一个指标。",
 };
 
 // Id-prefixed forms produced by the backend.
@@ -126,9 +120,12 @@ const ERRORS: [RegExp, string][] = [
     "「$1」的段必须连续、非空，且状态 id ≥ 0",
   ],
   [/^unknown dataset '(.+)'\. available: (.*)$/, "未知数据集「$1」，可选：$2"],
-  [/^unknown engine '(.+)'; available: (.*)$/, "未知引擎「$1」，可选：$2"],
   [/^dataset '(.+)' is listed but not integrated: (.*)$/, "数据集「$1」已登记但未集成：$2"],
   [/raw data missing:/, "原始数据缺失："],
+  [/^Unknown entity '(.+)'\.$/, "未知实体「$1」。"],
+  [/^Entity '(.+)' has no metric (.+)\.$/, "实体「$1」没有指标 $2。"],
+  [/^metric '(.+)' is not among the channels (.+) of (.+)$/, "指标「$1」不在 $3 的通道 $2 里"],
+  [/^window (\d+) is not smaller than series length (\d+)$/, "窗口 $1 不小于序列长度 $2"],
 ];
 
 // Longest first, so "latency p99" is not shadowed by "latency".

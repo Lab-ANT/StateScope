@@ -1,10 +1,4 @@
-// Global knowledge: deterministically distils the five stage outputs into an accumulating
-// picture. Pure frontend and pure functions over results the stages already computed.
-// Each stage yields a few insights; a synthesis pass then cross-checks them.
-
-import type {
-  Aligned, ClusterResult, Correlation, Detected, Meta, SeriesData, Selection, Stage,
-} from "../types";
+import type { CausalityResult, Correlation, Detected, Meta, SeriesData, Selection, Stage } from "../types";
 import { t, dyn, dynList, datasetLabel, type Key } from "../i18n";
 
 export type Tone = "fact" | "pattern" | "highlight";
@@ -25,30 +19,19 @@ export interface Snapshot {
   meta: Meta | null;
   series: SeriesData[] | null;
   selection: Selection | null;
-  detected: Detected | Detected[] | null;
-  aligned: Aligned | null;
+  detected: Detected[] | null;
   correlations: Record<string, Correlation> | null;
-  causality: ClusterResult | null;
+  causality: CausalityResult | null;
 }
 
 const STAGE_KEY: Record<Stage, Key> = {
-  data: "stage.data", select: "stage.select", detect: "stage.detect", align: "stage.align",
+  data: "stage.data", select: "stage.select", detect: "stage.detect",
   correlate: "stage.correlate", causality: "stage.causality",
 };
-const STAGE_ORDER: Stage[] = ["data", "select", "detect", "align", "correlate", "causality"];
+const STAGE_ORDER: Stage[] = ["data", "select", "detect", "correlate", "causality"];
 
-// Allen interval relations; the strings live under allen.* in the dictionaries.
-const ALLEN = new Set([
-  "before", "meets", "overlaps", "overlapped_by", "during", "contains",
-  "starts", "started_by", "finishes", "finished_by", "equals", "after", "met_by",
-]);
-const allen = (rel: string): string => (ALLEN.has(rel) ? t(`allen.${rel}` as Key) : rel);
-
-interface LeadLag { leader: string; follower: string; lag: number; nmi: number; }
-
-// Derive a linear host order from the leader/follower edges, by in-degree. Deterministic.
 function chainFromEdges(rawEdges: { from: string; to: string }[]): string[] {
-  // Deduplicate first: causal rules often repeat an edge, which would skew the in-degrees.
+  // Dedupe: repeated edges would skew in-degrees.
   const uniq = new Map<string, { from: string; to: string }>();
   for (const e of rawEdges) if (e.from !== e.to) uniq.set(`${e.from}->${e.to}`, e);
   const edges = [...uniq.values()];
@@ -63,7 +46,6 @@ function chainFromEdges(rawEdges: { from: string; to: string }[]): string[] {
   }
   const order: string[] = [];
   const seen = new Set<string>();
-  // Repeatedly take the unvisited node of least in-degree, breaking ties lexicographically.
   const remaining = [...nodes];
   while (order.length < remaining.length) {
     const cand = remaining
@@ -78,13 +60,22 @@ function chainFromEdges(rawEdges: { from: string; to: string }[]): string[] {
 
 export function buildKnowledge(s: Snapshot): KnowledgeReport {
   const done = new Set<Stage>(s.meta?.completed ?? []);
-  const detected = Array.isArray(s.detected) ? s.detected : s.detected ? [s.detected] : null;
-  const sections: KnowledgeSection[] = STAGE_ORDER.map((stage) => ({
+  const detected = s.detected;
+  const stages = STAGE_ORDER;
+  const entityOf = (series: string) => detected?.find((d) => d.name === series)?.entity;
+  const seriesLabel = (series: string) => {
+    const e = entityOf(series);
+    return e && series.startsWith(`${e}.`) ? `${dyn(e)}·${dyn(series.slice(e.length + 1))}` : dyn(series);
+  };
+  const stateLabel = (ref: string) => {
+    const i = ref.lastIndexOf(":S");
+    return i >= 0 ? `${seriesLabel(ref.slice(0, i))}=${ref.slice(i + 2)}` : seriesLabel(ref);
+  };
+  const sections: KnowledgeSection[] = stages.map((stage) => ({
     stage, label: t(STAGE_KEY[stage]), done: done.has(stage), insights: [],
   }));
   const sec = (stage: Stage) => sections.find((x) => x.stage === stage)!;
 
-  // ── Stage 1: data import ──
   if (done.has("data") && s.meta) {
     const st = s.meta.stats;
     // Dataset labels go through datasetLabel by id, not the term-level dyn.
@@ -108,203 +99,143 @@ export function buildKnowledge(s: Snapshot): KnowledgeReport {
     }
   }
 
-  // ── Stage 2: metric selection ──
   if (done.has("select") && s.selection) {
-    const total = s.meta?.stats?.n_channels ?? s.series?.[0]?.channels.length ?? 0;
-    const k = s.selection.names.length;
-    const dropped = Math.max(0, total - k);
+    const picks = Object.entries(s.selection.picks).filter(([, m]) => m.length);
+    const k = picks.reduce((a, [, m]) => a + m.length, 0);
+    const total = (s.series ?? []).reduce((a, x) => a + x.channels.length, 0);
+    const how = t(s.selection.selector === "manual" ? "insight.selectHowManual" : "insight.selectHowRank");
     sec("select").insights.push({
-      text: t("insight.selectSummary", {
-        total, k, selector: s.selection.selector, names: dynList(s.selection.names),
-      }),
+      text: t("insight.selectPerEntity", { nEnt: picks.length, k, total, how }),
       tone: "fact",
     });
-    if (dropped > 0)
-      sec("select").insights.push({
-        text: t("insight.selectDropped", { dropped, k }),
-        tone: "pattern",
-      });
+    for (const [e, ms] of picks)
+      sec("select").insights.push({ text: t("insight.selectEntityLine", { entity: dyn(e), metrics: dynList(ms) }), tone: "fact" });
+    if (total > k) sec("select").insights.push({ text: t("insight.selectDroppedMetric", { dropped: total - k }), tone: "pattern" });
   }
 
-  // ── Stage 3: state detection ──
   if (done.has("detect") && detected) {
     const counts = detected.map((d) => d.num_states);
     const avg = counts.reduce((a, b) => a + b, 0) / (counts.length || 1);
     sec("detect").insights.push({
-      text: t("insight.detectRange", {
-        min: Math.min(...counts), max: Math.max(...counts), avg: avg.toFixed(1),
-      }),
+      text: t("insight.detectMetric", { n: detected.length, nEnt: new Set(detected.map((d) => d.entity)).size }),
       tone: "fact",
     });
-    const aris = detected.filter((d) => d.ari != null).map((d) => d.ari as number);
-    if (aris.length)
-      sec("detect").insights.push({
-        text: t("insight.detectAri", {
-          ari: (aris.reduce((a, b) => a + b, 0) / aris.length).toFixed(2),
-        }),
-        tone: "fact",
-      });
-    sec("detect").insights.push({ text: t("insight.detectLocal"), tone: "pattern" });
-  }
-
-  // ── Stage 1.3: state alignment ──
-  let mainChain: number[] = [];
-  if (done.has("align") && s.aligned) {
-    const g = s.aligned.global_states;
-    sec("align").insights.push({
-      text: t("insight.alignVocab", { n: g.length, states: dynList(g.map((x) => `S${x}`)) }),
+    sec("detect").insights.push({
+      text: Math.min(...counts) === Math.max(...counts)
+        ? t("insight.detectSame", { n: counts[0] })
+        : t("insight.detectRange", { min: Math.min(...counts), max: Math.max(...counts), avg: avg.toFixed(1) }),
       tone: "fact",
     });
-    const tg = s.aligned.transition_graph;
-    if (tg && tg.edges.length) {
-      // Walk the main-line edges to get the evolution backbone.
-      const mainNext = new Map<number, number>();
-      for (const e of tg.edges) if (e.main) mainNext.set(e.from, e.to);
-      const start = tg.nodes.slice().sort((a, b) => b.occupancy - a.occupancy)[0]?.state ?? tg.states[0];
-      const visited = new Set<number>();
-      let cur: number | undefined = start;
-      while (cur != null && !visited.has(cur)) { mainChain.push(cur); visited.add(cur); cur = mainNext.get(cur); }
-      if (mainChain.length > 1)
-        sec("align").insights.push({
-          text: t("insight.alignChain", { chain: mainChain.map((x) => `S${x}`).join(" → ") }),
-          tone: "pattern",
-        });
-    }
+    sec("detect").insights.push({ text: t("insight.detectMetricOwn"), tone: "pattern" });
   }
 
-  // ── Stage 4: state correlation ──
-  let leadLags: LeadLag[] = [];
   if (done.has("correlate") && s.correlations) {
-    const tl = s.correlations.time_lagged;
-    if (tl?.pairs?.length) {
-      leadLags = (tl.pairs as unknown as LeadLag[]).filter((p) => p.leader !== p.follower);
-      const top = leadLags.slice().sort((a, b) => b.nmi - a.nmi).slice(0, 3);
-      for (const p of top)
+    const overall = s.correlations.overall;
+    if (overall?.matrix && overall.labels) {
+      const m = overall.matrix, L = overall.labels;
+      const pairs: { a: string; b: string; v: number }[] = [];
+      for (let i = 0; i < m.length; i++) for (let j = 0; j < i; j++) pairs.push({ a: L[j], b: L[i], v: m[i][j] });
+      pairs.sort((x, y) => y.v - x.v);
+      const top = pairs[0];
+      const cross = pairs.find((p) => entityOf(p.a) && entityOf(p.b) && entityOf(p.a) !== entityOf(p.b));
+      if (top)
         sec("correlate").insights.push({
-          text: t("insight.corrLeadLag", {
-            leader: dyn(p.leader), follower: dyn(p.follower), lag: p.lag, nmi: p.nmi.toFixed(2),
-          }),
+          text: t("insight.corrOverallTop", { a: seriesLabel(top.a), b: seriesLabel(top.b), nmi: top.v.toFixed(2) }),
           tone: "fact",
         });
-    }
-    const overall = s.correlations.overall;
-    if (overall?.matrix) {
-      const m = overall.matrix;
-      let sum = 0, cnt = 0;
-      for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) { sum += m[i][j]; cnt++; }
-      if (cnt)
+      if (cross && cross !== top)
         sec("correlate").insights.push({
-          text: t("insight.corrOverall", { nmi: (sum / cnt).toFixed(2) }),
-          tone: "pattern",
+          text: t("insight.corrOverallCross", { a: seriesLabel(cross.a), b: seriesLabel(cross.b), nmi: cross.v.toFixed(2) }),
+          tone: "fact",
         });
     }
     const partial = s.correlations.partial;
+    const refEntity = (ref: string) => entityOf(ref.slice(0, ref.lastIndexOf(":S") >= 0 ? ref.lastIndexOf(":S") : ref.length));
     if (partial?.pairs?.length) {
-      const p = partial.pairs[0] as { from: string; to: string; lift: number };
-      sec("correlate").insights.push({
-        text: t("insight.corrPartial", {
-          from: dyn(p.from), to: dyn(p.to), lift: Number(p.lift).toFixed(2),
-        }),
-        tone: "fact",
+      const ps = partial.pairs as { from: string; to: string; lift: number; jaccard?: number }[];
+      const fmt = (p: (typeof ps)[number]) => ({
+        from: stateLabel(p.from), to: stateLabel(p.to), jaccard: Number(p.jaccard ?? 0).toFixed(2), lift: Number(p.lift).toFixed(2),
       });
-    }
-    const structural = s.correlations.structural;
-    if (structural?.pairs?.length) {
-      const p = structural.pairs[0] as { from: string; to: string; state: number; relation: string };
-      sec("correlate").insights.push({
-        text: t("insight.corrStructural", {
-          state: p.state, from: dyn(p.from), to: dyn(p.to), relation: allen(p.relation),
-        }),
-        tone: "fact",
-      });
-    }
-  }
-
-  // ── Stage 5: cluster regimes + causality ──
-  let totalCross = 0;
-  let topDriverName: string | null = null;
-  if (done.has("causality") && s.causality) {
-    const driver = new Map<string, number>();
-    const driven = new Map<string, number>();
-    let best = { state: -1, n: 0 };
-    for (const g of s.causality.graphs) {
-      const cross = g.edges.filter((e) => e.src !== e.dst);
-      totalCross += cross.length;
-      if (cross.length > best.n) best = { state: g.state, n: cross.length };
-      for (const e of cross) {
-        driver.set(e.src, (driver.get(e.src) ?? 0) + 1);
-        driven.set(e.dst, (driven.get(e.dst) ?? 0) + 1);
-      }
-    }
-    const topDriver = [...driver.entries()].sort((a, b) => b[1] - a[1])[0];
-    const topDriven = [...driven.entries()].sort((a, b) => b[1] - a[1])[0];
-    topDriverName = topDriver?.[0] ?? null;
-    const nReg = s.causality.regimes.states.length;
-    if (totalCross > 0) {
-      sec("causality").insights.push({
-        text: t("insight.causalSummary", { nRegimes: nReg, nEdges: totalCross }),
-        tone: "fact",
-      });
-      if (topDriver)
-        sec("causality").insights.push({
-          text: t("insight.causalDriver", {
-            driver: dyn(topDriver[0]),
-            n: topDriver[1],
-            driven: topDriven ? t("insight.causalDrivenTail", { name: dyn(topDriven[0]) }) : "",
-          }),
+      sec("correlate").insights.push({ text: t("insight.corrPartial", fmt(ps[0])), tone: "fact" });
+      const cross = ps.filter((p) => refEntity(p.from) && refEntity(p.to) && refEntity(p.from) !== refEntity(p.to));
+      if (cross.length) {
+        sec("correlate").insights.push({
+          text: t("insight.corrPartialCross", { n: cross.length, total: ps.length, ...fmt(cross[0]) }),
           tone: "pattern",
         });
-      if (best.n > 0)
-        sec("causality").insights.push({
-          text: t("insight.causalDensest", { state: best.state, n: best.n }),
-          tone: "fact",
-        });
-      sec("causality").insights.push({ text: t("insight.causalSwitch"), tone: "pattern" });
-    } else {
-      sec("causality").insights.push({ text: t("insight.causalEmpty"), tone: "fact" });
+      }
     }
   }
 
-  // ── Synthesis across stages ──
+  let totalCross = 0;
+  let topDriverName: string | null = null;
+  let nCorroborated = 0;
+  let nFound = 0;
+  let entityFlow: { from: string; to: string }[] = [];
+  if (done.has("causality") && s.causality) {
+    const c = s.causality;
+    const node = (name: string) => {
+      const e = [...c.events, ...c.dropped].find((x) => x.name === name);
+      return e ? `${dyn(e.entity)}${e.metric ? `·${dyn(e.metric)}` : ""}=${e.state}` : dyn(name);
+    };
+    const entityOf = (name: string) => [...c.events, ...c.dropped].find((x) => x.name === name)?.entity ?? name;
+    const cross = c.found.filter((m) => [...m.triggers, ...m.cond.map(([x]) => x)].some((p) => entityOf(p) !== entityOf(m.child)));
+    nFound = c.found.length;
+    totalCross = cross.length;
+    const causeCount = new Map<string, number>();
+    for (const m of c.found) for (const p of [...m.triggers, ...m.cond.map(([x]) => x)]) causeCount.set(entityOf(p), (causeCount.get(entityOf(p)) ?? 0) + 1);
+    topDriverName = [...causeCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    if (c.found.length) {
+      sec("causality").insights.push({
+        text: t("insight.stateCausalSummary", { k: c.events.length, f: c.found.length, x: cross.length }),
+        tone: "fact",
+      });
+      const top = cross[0] ?? c.found[0];
+      const edge = top.params.edges?.[0];
+      const cause = top.triggers[0] ?? top.cond[0]?.[0];
+      sec("causality").insights.push({
+        text: t(top.triggers.length ? "insight.stateCausalTopTrigger" : "insight.stateCausalTopCond", {
+          cause: node(cause), effect: node(top.child), lag: edge?.delay_mean != null ? Math.round(edge.delay_mean) : "—",
+          gain: top.gain.toFixed(1),
+        }),
+        tone: "highlight",
+      });
+      if (topDriverName)
+        sec("causality").insights.push({ text: t("insight.stateCausalDriver", { name: dyn(topDriverName) }), tone: "pattern" });
+      if (c.found.some((m) => m.params.corroborated != null)) {
+        nCorroborated = c.found.filter((m) => m.params.corroborated).length;
+        sec("causality").insights.push({
+          text: t("insight.stateCausalCorroborated", { c: nCorroborated, f: c.found.length }),
+          tone: "fact",
+        });
+      }
+      entityFlow = cross.flatMap((m) =>
+        [...m.triggers, ...m.cond.map(([x]) => x)].map((p) => ({ from: entityOf(p), to: entityOf(m.child) })))
+        .filter((e) => e.from !== e.to);
+    } else {
+      sec("causality").insights.push({ text: t("insight.stateCausalEmpty"), tone: "fact" });
+    }
+  }
+
   const synthesis: Insight[] = [];
-  const leadChain = leadLags.length ? chainFromEdges(leadLags.map((p) => ({ from: p.leader, to: p.follower }))) : [];
 
-  if (leadChain.length > 1)
-    synthesis.push({
-      text: t("insight.synthChain", { chain: leadChain.map(dyn).join(" → ") }),
-      tone: "pattern",
-    });
-
-  // The macro cascade (stage 4, across hosts) and the micro mechanism (stage 5, channels
-  // inside a state) complement each other.
-  if (leadChain.length > 1 && totalCross > 0) {
-    const avgLag = leadLags.length
-      ? Math.round(leadLags.reduce((a, b) => a + b.lag, 0) / leadLags.length)
-      : null;
-    synthesis.push({
-      text: t("insight.synthKey", {
-        chain: leadChain.map(dyn).join(" → "),
-        lag: avgLag != null ? t("insight.synthKeyLag", { lag: avgLag }) : "",
-        driver: topDriverName ? t("insight.synthKeyDriver", { name: dyn(topDriverName) }) : "",
-      }),
-      tone: "highlight",
-    });
+  if (s.causality && done.has("causality") && nFound > 0) {
+    const flow = chainFromEdges(entityFlow);
+    if (flow.length > 1)
+      synthesis.push({ text: t("insight.synthEntityFlow", { chain: flow.map(dyn).join(" → ") }), tone: "pattern" });
+    if (nCorroborated > 0)
+      synthesis.push({ text: t("insight.synthCorroborated", { c: nCorroborated, f: nFound }), tone: "highlight" });
+    if (detected && s.selection) {
+      const k = detected.length;
+      const total = (s.series ?? []).reduce((a, x) => a + x.channels.length, 0);
+      synthesis.push({
+        text: t("insight.synthThroughState", {
+          k, total, states: detected.reduce((a, d) => a + d.num_states, 0), f: nFound, x: totalCross,
+        }),
+        tone: "highlight",
+      });
+    }
   }
-
-  // Metrics -> states -> channel causality, end to end.
-  if (done.has("select") && done.has("causality") && s.selection && totalCross > 0) {
-    const total = s.meta?.stats?.n_channels ?? 0;
-    synthesis.push({
-      text: t("insight.synthThrough", { k: s.selection.names.length, total }),
-      tone: "highlight",
-    });
-  }
-
-  if (mainChain.length > 1 && done.has("causality"))
-    synthesis.push({
-      text: t("insight.synthMainChain", { chain: mainChain.map((x) => `S${x}`).join("→") }),
-      tone: "pattern",
-    });
 
   if (synthesis.length === 0)
     synthesis.push({
@@ -317,6 +248,6 @@ export function buildKnowledge(s: Snapshot): KnowledgeReport {
   return {
     sections,
     synthesis,
-    progress: { done: STAGE_ORDER.filter((x) => done.has(x)).length, total: STAGE_ORDER.length },
+    progress: { done: stages.filter((x) => done.has(x)).length, total: stages.length },
   };
 }

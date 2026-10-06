@@ -1,5 +1,5 @@
-// Self-normalised sparkline of one channel, used for the kept-vs-dropped comparison.
-export function Sparkline(props: { values: number[]; color: string; width?: number; height?: number }) {
+// fluid: fills container width without thickening the stroke.
+export function Sparkline(props: { values: number[]; color: string; width?: number; height?: number; fluid?: boolean }) {
   const { values, color } = props;
   const W = props.width ?? 150;
   const H = props.height ?? 32;
@@ -17,8 +17,8 @@ export function Sparkline(props: { values: number[]; color: string; width?: numb
     })
     .join(" ");
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block">
-      <path d={d} fill="none" stroke={color} strokeWidth={1.2} />
+    <svg width={props.fluid ? "100%" : W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block">
+      <path d={d} fill="none" stroke={color} strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }

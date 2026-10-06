@@ -46,11 +46,6 @@ def reorder_labels(labels: np.ndarray) -> np.ndarray:
     return np.array([mapping[int(v)] for v in labels], dtype=int)
 
 
-def find_change_points(labels: np.ndarray) -> list[int]:
-    """Indices where adjacent labels differ."""
-    return (np.where(np.diff(labels) != 0)[0] + 1).tolist()
-
-
 def get_run_length_segments(state_seq: np.ndarray) -> list[tuple[int, int, int]]:
     """Run-length encode into ``(start, end_exclusive, label)`` tuples."""
     state_seq = np.asarray(state_seq, dtype=int)

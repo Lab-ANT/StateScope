@@ -2,177 +2,113 @@
 
 # StateScope
 
-**面向时间序列状态分析的综合生态系统**
+**Time Series State Analysis: A State-Centric Vision**
 
-PVLDB 愿景论文的参考实现 + 交互式演示
+PVLDB 2027 愿景论文所设想的状态分析系统原型
 
 [📄 论文](https://vldb.org/pvldb/) · [🇬🇧 English](README.md)
 
 ![Python](https://img.shields.io/badge/python-3.11-3776ab)
 ![PyTorch](https://img.shields.io/badge/pytorch-2.x-ee4c2c)
 ![React](https://img.shields.io/badge/react-18-61dafb)
-![Deterministic](https://img.shields.io/badge/pipeline-deterministic-2ca35a)
-
-<img src="figures/zh/final/01-data-s1.png" width="880">
 
 </div>
 
 ---
 
-时间序列分析长期是**以数值为中心**的。论文指出，被监控的系统用**状态**来理解更自然 —— 一串运行模式 ——
-而状态检测应当是分析的**起点**而非终点。StateScope 把它做成了可端到端运行的系统：
+时间序列状态检测把原始序列切分成若干段，并给每段打上状态标签，从而把数值观测转换成状态序列。现有工作大多把状态当作
+分析的终点。论文提出**时间序列状态分析**：以状态为核心，连接原始观测与知识发现，并给出一个覆盖数据基础设施、特征
+工程、状态检测和高阶状态分析的研究框架。
 
-```
-① 数据基础设施  →  ② 特征工程  →  ③ 状态检测  →  ④ 状态相关性  →  ⑤ 状态因果
-  标注 · 对齐         指标选择       原始序列→状态     六类关系         随运行态变化
-```
+<p align="center"><img src="figures/framework.png" width="880"><br><em>论文图 3：所设想的状态分析系统框架。</em></p>
 
-| | |
-|---|---|
-| **一套数据契约** | `MTS → StateSequence → AlignedStates → CorrelationResult / ClusterCausalResult` —— 每个阶段可独立测试，阶段之间无需重新解析 |
-| **三种标注场景** | 全标注（ISSD）· 弱标注（边界事件）· 无标注（排序） |
-| **对齐即构造** | 序列拼接后只检测一次，同一物理状态天然拿到同一个全局 id |
-| **人在回路** | 校准工作台可调边界、拆/并段、改状态；下游阶段自动作废 |
-| **确定性** | 相同输入 → 逐字节一致的状态与因果图 |
-| **真实数据** | PetShop · LEMMA-RCA · WADI，外加带真值的合成级联生成器 |
+StateScope 是论文 §5 中用来演示该框架的原型。下面按组件逐一介绍，示例数据为工业配水实验平台 WADI。
 
 ## 快速开始
 
 ```bash
-uv sync --extra dev --extra demo      # 引擎 + API（Python 3.11, torch 2.x）；--extra causal 装 PCMCI+
-pnpm install && pnpm dev:full         # API :8000 + web :5173
+uv sync --extra demo                  # Python 3.11，torch 2.x
+pnpm install && pnpm dev:full         # API :8000 + 前端 :5173
 ```
 
-选一个数据集，按 **运行全部**，或逐阶段推进。界面中英双语。
+选一个数据集，点「运行全部」，或逐阶段运行。界面支持中英文切换。WADI 需要与 iTrust 签署数据协议（见
+`data_origin/wadi/README.md`）；没有 WADI 数据时，默认改用仓库自带的 PetShop。
 
----
+## 数据基础设施：数据导入
 
-# 演示实录 —— LEMMA-RCA
+<img src="figures/zh/01-overview.png" width="880">
 
-[LEMMA-RCA](https://lemma-rca.github.io/) `product_review`，2021-05-17 —— 一次真实注入 CPU 高负荷故障的当天。
-四个 Bookinfo pod（`catalogue`、`productpage`、`reviews`、`details`）× 6 指标 × 6 000 步，
-**没有任何逐时刻状态标签**：下面的一切都是从数据里发现的，参数为该数据集的界面默认值。
+来自服务器与工业系统的监控数据被整理成统一形式：每个实体（如 WADI 的一个阶段、一个微服务）是一组指标构成的多变量
+序列。演示内置 WADI、PetShop 和 LEMMA-RCA，点选数据集即加载；下游阶段在运行前保持灰色。
 
-## ① 数据导入
+## 特征工程：指标排序
 
-<img src="figures/zh/step/01-data-s2.png" width="880">
+<img src="figures/zh/02-select.png" width="880">
 
-4 条序列、6 个通道、24 000 个样本。数据集还自带 pod→node 放置图，后面因果阶段会用作参考拓扑。
+只有少数指标携带有用的状态信息。在无标注场景下，指标选择被表述为**指标排序**问题：信息量大的指标通常含有在一段
+时间内保持稳定的局部模式，而这些模式的组织方式会随时间变化。每个实体各自排序并保留前 K 个指标，也可以手动点选。
 
-## ② 指标选择 —— 无标注
+## 状态检测
 
-**6 → 4**：保留 `CPU`、`内存`、`收/发包率`；与包率冗余的两路带宽被剔除。选中的通道带台阶式电平变化，
-剔除的则是尖刺、平稳的通道。
+<img src="figures/zh/03-detect.png" width="880">
 
-<img src="figures/zh/final/02-select-d2-card.png" width="440"> <img src="figures/zh/final/02-select-d3-card.png" width="440">
+状态检测阶段采用 [E2USD](https://github.com/AI4CTS/E2USD)。每个选中的指标单独检测，得到各自的状态序列；状态在
+指标内按水平编号，因此不需要跨序列对齐。检测结果逐个指标呈现，每条状态彩带内叠画该指标的原始曲线。
 
-## ③ 状态检测与校准
+检测得到的状态还可以用数据基础设施层提供的交互式状态标注工具修正。标注直接在状态彩带上进行，而不是框选区间：
+拖动边界微调、双击段内拆分、单击选段后改状态或合并、滚轮循环切换状态。低置信段会被标出，通常只需复核部分段。应用后的修改写回检测结果。
 
-每条序列变成一个状态序列。四个 pod **各自独立编号** —— 3、4、3、5 个 —— 所以颜色还对不上。
+<img src="figures/zh/03-calibrate.png" width="880">
 
-<img src="figures/zh/step/03-detect-s1.png" width="880">
+## 高阶分析
 
-**✎ 手动校准**打开打标工作台：拖边界、双击拆分、单击换状态或合并、滚轮循环切换状态。低置信段会被标出，
-只复核可疑处即可；应用修改后对齐及下游自动作废。
+### 状态相关性
 
-<img src="figures/zh/final/03-detect-calibrate-modal.png" width="880">
+<img src="figures/zh/04-correlate.png" width="880">
 
-## ①·3 状态对齐
+高阶分析基于 StaCo，分析两类相关性：
 
-所有序列映射到统一的 **7 个全局状态** —— 现在同色 = 同一物理状态。转移图把所有切换汇总成
-P(下一状态 | 当前状态)，勾勒出主干 **S5 → S3 → S4**。
+- **整体相关**：衡量两条状态序列的全局一致性（NMI）。两条序列的状态标签即使不同，也可能强相关。
+- **部分相关**：刻画特定状态之间的依赖（时间重叠，Jaccard）。即使两条序列整体相关性很弱，这种依赖也可能存在。
 
-<img src="figures/zh/final/04-align-d2-aligned-state-ribbons.png" width="880">
+这两类相关性为因果发现提供候选组件和状态对。
 
-<img src="figures/zh/final/04-align-d3-state-transition-graph.png" width="880">
+### 状态因果发现
 
-## ④ 状态相关性
+<img src="figures/zh/05-causality.png" width="880">
 
-**服务-状态影响流**：每个服务一条彩带、共享时间轴，弧线 = 时滞影响，虚线框 = 同期共现。
-默认阈值下留下 7 条链路。
+状态因果组件采用[区间事件因果发现方法](https://doi.org/10.1609/aaai.v40i25.39201)（NIAGARA；Cornanguer 等，
+AAAI 2026），把每个状态段当作一次区间事件。矩阵在系统、指标、状态三个层级上汇总发现的依赖关系：
 
-<img src="figures/zh/final/05-correlate-d1-service-state-influence-flow.png" width="880">
+- 行是原因，列是结果；
+- 颜色表示 MDL 增益，数字表示平均触发时滞；
+- C 表示以源状态正在持续为条件的依赖。
 
-| 源 | 目标 | 类型 | lag | 强度 |
-|---|---|---|---|---|
-| `productpage` S3 | `reviews` S3 | 共现 | 0 | 0.970 |
-| `details` S4 | `productpage` S3 | 时滞 → | 110 | 0.967 |
-| `details` S4 | `reviews` S3 | 时滞 → | 80 | 0.967 |
-| `catalogue` S1 | `productpage` S5 | 共现 | 0 | 0.940 |
-| `catalogue` S1 | `details` S0 | 时滞 → | 200 | 0.915 |
+勾选的机制会在关系序列图中逐次画出：
 
-整体一致性只算中等（平均 NMI 0.58），而单对可达 0.81 —— 全局一致性低估了那些带时滞的、部分的关系，
-这正需要其余几类视图来恢复。
+<img src="figures/zh/05-traces.png" width="880">
 
-<img src="figures/zh/final/05-correlate-d3-overall-nmi.png" width="290"> <img src="figures/zh/final/05-correlate-d4-transition-co-occurrence.png" width="290"> <img src="figures/zh/final/05-correlate-d5-best-lag-nmi.png" width="290">
+在 WADI 上，三个阶段（一级供水网 P1、二级配水网 P2、回水网 P3）各保留排序前三的指标。发现的依赖包括：
 
-## ⑤ 状态因果
+- **P2 → P3：** P2·FIC_301 的状态 0 约 5 步后触发 P3·FIT_001 的状态 0，前提是 P1·AIT_005 处于状态 1。
+- **P3 与 P2：** P2·FIC_201 的状态 3 主要在回水箱液位 P3·LT_001 处于高位（状态 3）时出现。
+- **P2 内部：** FIC_601 的状态 0 关联到 FIC_301 的状态 0，时滞约 31 步。
 
-把集群当作**一个对象**：4 pod × 4 通道 → 16 通道序列，E2USD 切出 **2 个运行态**，每个 regime 内一张
-masked PCMCI+ 图。实线 = 同期、虚线 = 滞后、粗细 ∝ |偏相关|；节点边框 = pod、内填 = 指标。
-
-<img src="figures/zh/final/06-causality-graph-regime1.png" width="880">
-
-**regime 1**（故障活跃的后半段，n = 1 600）的跨 pod 结构为 `details:CPU → productpage:CPU`（+0.42，滞后 2）、
-`details:CPU → reviews:CPU`（+0.37）与 `productpage:内存 → catalogue:CPU`（−0.45）；pod 内部则出现物理上的
-`收包率 → 发包率`，|s| ≈ 0.97。regime 0 更稀疏 —— 同一对通道在一个 regime 里相连、在另一个里断开，
-这就是"随运行态变化的因果"。
-
-<details><summary>开发者视图 —— 真值叠加</summary>
-
-LEMMA 没有调用图，但有 pod→node 放置：`catalogue`、`details`、`productpage` 同在一个 node，`reviews` 单独在
-另一个。灰色虚线弧就是这个参考 —— 发现的因果边集中落在同置的 pod 对上。
-
-<img src="figures/zh/final/06-causality-graph-regime1-gt-overlay.png" width="880">
-
-</details>
-
-## 🧠 全局知识发现
-
-每个阶段一段文字结论 + 一张重点图，最后以跨阶段互证的**综合规律**收尾 —— 对应论文中的
-*actionable rules, knowledge*。它随流水线推进逐步长出来。
-
-<img src="figures/zh/final/07-knowledge-s1.png" width="880">
-
-<img src="figures/zh/final/07-knowledge-d7-synthesis.png" width="880">
-
----
-
-## 流水线 ↔ 论文
-
-论文路线图的每个阶段对应一个组件，按注册名可整体替换。
-
-| 论文阶段 | 组件 | 注册名 | 基于 |
-|---|---|---|---|
-| §3.1 数据基础设施 —— 标注 · 合成数据 · **对齐** | `stage1_infra/alignment/concat_aligner.py` · `io/synthetic.py` · 校准工作台 | `aligner: concat` | FastTSA（Du 等，投 IEEE SMC 2026） |
-| §3.2 特征工程 —— 全 / 弱 / 无标注 | `stage2_features/{issd_selector, weak_ranker, unlabeled_ranker}.py` | `selector: issd · weak · unlabeled` | ISSD（SIGMOD 2025）· Time2State（SIGMOD 2023） |
-| §3.3 状态检测 | `stage3_detection/detector.py` | `detector: e2usd` | E2USD（WWW 2024）· Time2State（SIGMOD 2023） |
-| §3.4 状态相关性 | `stage4_correlation/analyzers.py` | `correlation: overall · transition · partial · time_lagged · structural · state_link` | StaCo（AAIA 2024） |
-| §3.5 状态因果 | `stage5_causality/{cluster, pcmci, apriori}.py` | 集群引擎 `e2usd_pcmci`；`causality: apriori`（备用） | PCMCI+（Runge 等, Sci. Adv. 2019 / UAI 2020）· E2USD |
-
-## 数据集
-
-| 数据集 | 是什么 | 真值 | 获取 |
-|---|---|---|---|
-| 抽象合成 | 多主机级联序列，可调参，注入噪声通道 | 逐时刻状态 | 内置 |
-| [PetShop](https://github.com/amazon-science/petshop-root-cause-analysis) | 真实 AWS 微服务，每服务 5 个指标 | 调用图 + 故障根因 | 已 vendoring（CC-BY-4.0） |
-| [LEMMA-RCA](https://lemma-rca.github.io/) | NEC 微服务 / 云，每 pod 6 个指标 | 故障根因 + pod→node 放置 | `data_origin/lemma_rca/`（CC-BY-ND） |
-| [WADI](https://itrust.sutd.edu.sg/itrust-labs_datasets/) | 配水 SCADA，3 个相位 | 攻击标签 + 水流方向 | `data_origin/WaDi.zip`（需 iTrust 协议） |
 
 ## 引用
 
 ```bibtex
-@article{wang2026statescope,
-  title   = {Towards a Comprehensive Ecosystem for Time Series State Analysis [Vision]},
-  author  = {Wang, Chengyu and Du, Yimin and Zhao, Shan and Liao, Xin and
-             Zhou, Tongqing and Cai, Zhiping and Wang, Meng},
+@article{wang2027statescope,
+  title   = {Time Series State Analysis: A State-Centric Vision [Vision]},
+  author  = {Wang, Chengyu and Du, Yimin and Zhou, Tongqing and Zhao, Shan and
+             Liao, Xin and Cai, Zhiping},
   journal = {Proceedings of the VLDB Endowment},
-  year    = {2026}
+  year    = {2027}
 }
 ```
 
 ## 致谢
 
 基于 [Time2State](https://github.com/Lab-ANT/Time2State)、[E2USD](https://github.com/AI4CTS/E2USD)、
-[ISSD](https://github.com/Lab-ANT/ISSD)、labelState 与
-[tigramite](https://github.com/jakobrunge/tigramite)；以及 PetShop、LEMMA-RCA、WADI 数据集。
+[ISSD](https://github.com/Lab-ANT/ISSD)、[FastTSA](https://github.com/BuiltByDu/FastTSA)、StaCo 与 [NIAGARA](https://doi.org/10.1609/aaai.v40i25.39201) 构建。
+数据：WADI、PetShop、LEMMA-RCA。许可见 `NOTICE`。

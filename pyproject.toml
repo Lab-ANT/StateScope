@@ -1,27 +1,21 @@
 [project]
 name = "statescope"
 version = "0.0.1"
-description = "A comprehensive ecosystem for time series state analysis (Vision paper reference implementation)"
+description = "Time series state analysis: a state-centric pipeline (vision paper reference implementation)"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 
-# Unified modern stack (decision: one env, py3.11 + torch 2.x). The research
-# code (Time2State / E2USD / ISSD) is ported to these versions; labelState
-# already proved E2USD runs on torch 2.x / py3.11.
 dependencies = [
     "numpy>=1.26,<2.0",
     "scipy>=1.11",
     "scikit-learn>=1.4",
     "pandas>=2.2",
     "torch>=2.2",
-    "tqdm>=4.66",
-    "mlxtend>=0.23",          # Apriori / association rules (Stage 5)
 ]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.6"]
 demo = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
-causal = ["tigramite>=5.2"]          # PCMCI+ state-causality lab (Stage 5)
 
 [build-system]
 requires = ["hatchling"]

@@ -1,7 +1,7 @@
 """DDEM encoder: trains the network (FNCC loss) and encodes sliding windows.
 
 Vendored from the torch-2.x port in labelState; only the ``z_normalize`` import is rewired to
-statescope.util。
+statescope.util.
 """
 
 from __future__ import annotations

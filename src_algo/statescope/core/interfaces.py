@@ -1,38 +1,15 @@
-"""Abstract interfaces for the five pipeline stages.
-
-These Protocols define the contract each stage implementation must satisfy. They are
-deliberately thin so research code (ISSD, Time2State, E2USD) can be wrapped behind them
-with minimal change.
-
-Pipeline data flow (paper Fig. 3):
-
-    MTS ──▶ [2] ChannelSelector ──▶ MTS' (fewer channels)
-        ──▶ [3] StateDetector    ──▶ StateSequence（+ embeddings）
-        ──▶ [1.3] StateAligner   ──▶ AlignedStates       (across series)
-        ──▶ [4] CorrelationAnalyzer ──▶ CorrelationResult
-        ──▶ [5] CausalDiscoverer  ──▶ CausalGraph
-"""
+"""Protocols that each pipeline stage implementation must satisfy."""
 
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
-from statescope.core.types import (
-    AlignedStates,
-    CausalGraph,
-    CorrelationResult,
-    MTS,
-    StateSequence,
-)
+from statescope.core.types import AlignedStates, CorrelationResult, MTS, StateCausalResult, StateSequence
 
 
 @runtime_checkable
 class ChannelSelector(Protocol):
-    """Stage 2 — feature engineering / indicator selection.
-
-    Picks a subset of K informative channels. ``state_seqs`` is optional so the same
-    interface covers the fully-labelled (ISSD), weakly-labelled and unlabelled regimes.
-    """
+    """Stage 2: pick K informative channels (``state_seqs`` optional: labelled or unlabelled)."""
 
     def select(
         self,
@@ -44,7 +21,7 @@ class ChannelSelector(Protocol):
 
 @runtime_checkable
 class StateDetector(Protocol):
-    """Stage 3 — state detection. Shared by Time2State and E2USD."""
+    """Stage 3: state detection."""
 
     def fit(self, series: MTS) -> "StateDetector": ...
 
@@ -52,19 +29,8 @@ class StateDetector(Protocol):
 
 
 @runtime_checkable
-class StateAligner(Protocol):
-    """Stage 1.3 — state alignment.
-
-    Remaps independently numbered per-series state labels onto one global vocabulary.
-    Model-agnostic and non-intrusive: it only touches detector output.
-    """
-
-    def align(self, sequences: list[StateSequence]) -> AlignedStates: ...
-
-
-@runtime_checkable
 class CorrelationAnalyzer(Protocol):
-    """Stage 4 — state correlation detection."""
+    """Stage 4: state correlation."""
 
     kind: str
 
@@ -73,6 +39,6 @@ class CorrelationAnalyzer(Protocol):
 
 @runtime_checkable
 class CausalDiscoverer(Protocol):
-    """Stage 5 — state causality discovery."""
+    """Stage 5: state causality."""
 
-    def discover(self, aligned: AlignedStates) -> CausalGraph: ...
+    def discover(self, aligned: AlignedStates) -> StateCausalResult: ...
