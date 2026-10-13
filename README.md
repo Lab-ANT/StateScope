@@ -105,19 +105,6 @@ indicators. Among the discovered dependencies:
 - **P3 and P2:** state 3 of P2·FIC_201 occurs mainly while the return-tank level P3·LT_001 is high (state 3).
 - **Within P2:** state 0 of FIC_601 is linked to state 0 of FIC_301, with a delay of about 31 steps.
 
-
-## Citation
-
-```bibtex
-@article{wang2027statescope,
-  title   = {Time Series State Analysis: A State-Centric Vision [Vision]},
-  author  = {Wang, Chengyu and Du, Yimin and Zhou, Tongqing and Zhao, Shan and
-             Liao, Xin and Cai, Zhiping},
-  journal = {Proceedings of the VLDB Endowment},
-  year    = {2027}
-}
-```
-
 ## Acknowledgements
 
 Built on [Time2State](https://github.com/Lab-ANT/Time2State), [E2USD](https://github.com/AI4CTS/E2USD),
